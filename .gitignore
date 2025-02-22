@@ -1,0 +1,40 @@
+# Manim environment files
+manim-env/
+
+# Hamed environment files
+hamed/
+
+# Media output folders
+media/
+**/media/
+
+# NLTK data
+nltk_data/
+
+# Dataset directory
+data/
+
+# CSV files
+*.csv
+
+# Text files
+*.txt
+
+# PNG files
+*.png
+
+# Output directory
+output/
+
+# These python files are not needed for the project
+feature_elimination_fast.py
+feature_elimination_normal.py
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Manim cache
+*.manimcache
+.DS_Store
