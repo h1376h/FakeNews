@@ -16,12 +16,15 @@ data/
 
 # CSV files
 *.csv
+!results/pheme_all_elimination/*.csv
+!results/pheme_paper_elimination/*.csv
+!results/train_paper_elimination/*.csv
 
 # Text files
 *.txt
-
-# PNG files
-*.png
+!results/pheme_all_elimination/*.txt
+!results/pheme_paper_elimination/*.txt
+!results/train_paper_elimination/*.txt
 
 # Output directory
 output/

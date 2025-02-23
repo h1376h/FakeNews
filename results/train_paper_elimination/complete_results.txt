@@ -1,0 +1,64 @@
+=== Feature Elimination Results ===
+
+Initial State:
+- Features: 45
+- Initial ROC-AUC: 0.7999 ± 0.0067
+
+Early Stopping Point:
+- Features remaining: 1
+- Features at early stopping:
+user_avg_friends_count
+
+Best Model:
+- Number of features: 21
+- Best ROC-AUC: 0.8150 ± 0.0072
+- Best feature set:
+structural_num_retweets
+structural_avg_tweet_length
+structural_ratio_tweets_with_urls
+structural_num_tweets_with_media
+structural_num_tweets_with_hashtags
+user_avg_account_age_at_tweet
+user_num_verified
+user_avg_followers_count
+user_avg_friends_count
+user_source_account_age_days
+user_avg_statuses_count
+user_source_verified
+content_ratio_first_person
+content_ratio_second_person
+content_num_second_person
+content_ratio_smiley
+content_num_third_person
+content_disagreement
+content_num_question
+content_polarity
+temporal_followers_count_slope
+
+Feature Importance in Best Model:
+structural_num_retweets: 0.0073
+structural_avg_tweet_length: 0.0763
+structural_ratio_tweets_with_urls: 0.0511
+structural_num_tweets_with_media: 0.0038
+structural_num_tweets_with_hashtags: 0.0398
+user_avg_account_age_at_tweet: 0.0655
+user_num_verified: 0.0440
+user_avg_followers_count: 0.1022
+user_avg_friends_count: 0.0707
+user_source_account_age_days: 0.0640
+user_avg_statuses_count: 0.0899
+user_source_verified: 0.0073
+content_ratio_first_person: 0.0540
+content_ratio_second_person: 0.0404
+content_num_second_person: 0.0269
+content_ratio_smiley: 0.0122
+content_num_third_person: 0.0386
+content_disagreement: 0.0364
+content_num_question: 0.0295
+content_polarity: 0.0691
+temporal_followers_count_slope: 0.0712
+
+Final State:
+- Features remaining: 1
+- Final features:
+user_avg_friends_count

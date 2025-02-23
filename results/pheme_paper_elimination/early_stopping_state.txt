@@ -1,0 +1,5 @@
+Early stopping triggered at 1 features
+ROC-AUC at stopping: 0.6670 ± 0.0054
+
+Remaining features at early stopping:
+user_avg_friends_count

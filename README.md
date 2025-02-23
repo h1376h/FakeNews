@@ -27,6 +27,14 @@ pip install -r requirements.txt
 - `create_train_datasets.py`: Generate training datasets.
 - `explore_credbank_structure.py`: Explore the structure of CREDBANK.
 - `visualize_pheme.py`: Visualize aspects of the PHEME dataset.
+- `app.py`: Flask application providing a REST API for fake news classification.
+
+### API Usage
+
+The project includes a Flask API (`app.py`) that provides fake news classification capabilities:
+- Endpoint: `/classify` (POST)
+- Input: JSON with `csv_path` and `row_index`
+- Output: Classification result with probabilities and confidence score
 
 ### Jupyter Notebook
 - `FakeNews.ipynb`: A comprehensive notebook that demonstrates the overall analysis workflow.
