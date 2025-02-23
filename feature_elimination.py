@@ -51,7 +51,8 @@ def recursive_feature_elimination(X: np.ndarray, y: np.ndarray, feature_names: L
     
     # Keep track of current feature set
     current_features = list(range(n_features))
-    initial_scores = cross_val_score(clf, X, y, cv=5, scoring='roc_auc', n_jobs=-1)
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    initial_scores = cross_val_score(clf, X, y, cv=cv, scoring='roc_auc', n_jobs=-1)
     best_score = initial_scores.mean()
     best_score_std = initial_scores.std()
     best_feature_set = current_features.copy()
@@ -72,7 +73,7 @@ def recursive_feature_elimination(X: np.ndarray, y: np.ndarray, feature_names: L
         # Try removing each feature
         for idx in current_features:
             features_without_current = [f for f in current_features if f != idx]
-            cv_scores = cross_val_score(clf, X[:, features_without_current], y, cv=5, scoring='roc_auc', n_jobs=-1)
+            cv_scores = cross_val_score(clf, X[:, features_without_current], y, cv=cv, scoring='roc_auc', n_jobs=-1)
             scores.append((cv_scores.mean(), cv_scores.std(), idx))
         
         # Find feature whose removal gives best score
@@ -187,8 +188,7 @@ def recursive_feature_elimination(X: np.ndarray, y: np.ndarray, feature_names: L
     removal_impact = pd.DataFrame({
         'Feature': results['removed_feature'],
         'ROC-AUC': results['roc_auc'],
-        'Phase': ['pre_stopping' if i < len(results['roc_auc']) - len(early_stopping_features) 
-                 else 'post_stopping' for i in range(len(results['roc_auc']))]
+        'Phase': results['phase']
     })
     sns.barplot(data=removal_impact, x='Feature', y='ROC-AUC', hue='Phase')
     plt.xticks(rotation=45, ha='right')
