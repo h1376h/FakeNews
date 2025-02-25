@@ -82,13 +82,13 @@ class ThreadCaptureTool:
             credbank_df = pd.read_csv(credbank_file)
         
         # Group tweets by event/topic
-        grouped_df = credbank_df.groupby('topic_id')
+        grouped_df = credbank_df.groupby('topic_key')
         
         # Initialize list to store thread data
         thread_data = []
         
         # Process each event group
-        for topic_id, group in grouped_df:
+        for topic_key, group in grouped_df:
             # Find the most retweeted tweet as root
             if 'retweet_count' in group.columns:
                 # Use actual retweet count if available
@@ -111,7 +111,7 @@ class ThreadCaptureTool:
             thread = {
                 'source_tweet': root_tweet,
                 'reactions': reactions,
-                'thread_id': str(topic_id),
+                'thread_id': str(topic_key),
                 'category': 'rumours' if root_tweet.get('label', 0) == 1 else 'non-rumours'
             }
             
@@ -196,8 +196,8 @@ class ThreadCaptureTool:
         flattened_data = self._flatten_thread_data(thread_data)
         
         # Verify we have the expected distribution of labels
-        true_count = flattened_data[flattened_data['is_rumour'] == 0].drop_duplicates('thread_id').shape[0]
-        false_count = flattened_data[flattened_data['is_rumour'] == 1].drop_duplicates('thread_id').shape[0]
+        true_count = flattened_data[flattened_data['label'] == 0].drop_duplicates('thread_id').shape[0]
+        false_count = flattened_data[flattened_data['label'] == 1].drop_duplicates('thread_id').shape[0]
         
         print(f"Created {len(thread_data)} threads from BuzzFeed dataset")
         print(f"  - Positive samples (fake/mostly false): {false_count}")
