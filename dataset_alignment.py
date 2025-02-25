@@ -76,11 +76,34 @@ def extract_twitter_threads_from_buzzfeed(
         logger.error("Could not import BuzzFeed dataset module. Make sure dataset_buzzfeed.py is available.")
         return pd.DataFrame()
     
+    # Check if the dataset is empty
+    if buzzfeed_df.empty:
+        logger.error("BuzzFeed dataset is empty")
+        return pd.DataFrame()
+    
+    # Log available columns for debugging
+    logger.info(f"Available columns in BuzzFeed dataset: {', '.join(buzzfeed_df.columns)}")
+    
+    # Use tweet_count and hyperlink_count as engagement metrics
+    # If tweet_count is available, use it as the primary sorting metric
+    # Otherwise, fall back to hyperlink_count or other metrics
+    if 'tweet_count' in buzzfeed_df.columns:
+        engagement_metric = 'tweet_count'
+    elif 'hyperlink_count' in buzzfeed_df.columns:
+        engagement_metric = 'hyperlink_count'
+    else:
+        # If neither is available, create a composite engagement score
+        logger.warning("No direct engagement metric found. Creating a composite score.")
+        buzzfeed_df['engagement_score'] = buzzfeed_df['paragraph_count'].fillna(0)
+        engagement_metric = 'engagement_score'
+    
+    logger.info(f"Using '{engagement_metric}' as engagement metric for sorting")
+    
     # Select most shared stories from each political orientation
     left_wing = buzzfeed_df[buzzfeed_df['orientation'] == 'left'].sort_values(
-        by='fb_engagement', ascending=False).head(10)
+        by=engagement_metric, ascending=False).head(10)
     right_wing = buzzfeed_df[buzzfeed_df['orientation'] == 'right'].sort_values(
-        by='fb_engagement', ascending=False).head(10)
+        by=engagement_metric, ascending=False).head(10)
     
     # Combine into one balanced dataset
     selected_stories = pd.concat([left_wing, right_wing])
@@ -94,16 +117,19 @@ def extract_twitter_threads_from_buzzfeed(
         threads.extend(article_threads)
     
     # Convert to DataFrame
-    buzzfeed_threads_df = pd.DataFrame(threads)
+    buzzfeed_threads_df = pd.DataFrame(threads) if threads else pd.DataFrame()
     
     # Log statistics
-    true_count = len(buzzfeed_threads_df[buzzfeed_threads_df['label'] == 0])
-    false_count = len(buzzfeed_threads_df[buzzfeed_threads_df['label'] == 1])
-    logger.info(f"Extracted {len(buzzfeed_threads_df)} Twitter threads from BuzzFeed")
-    logger.info(f"Label distribution: {true_count} mostly true, {false_count} mostly false")
+    if not buzzfeed_threads_df.empty and 'label' in buzzfeed_threads_df.columns:
+        true_count = len(buzzfeed_threads_df[buzzfeed_threads_df['label'] == 0])
+        false_count = len(buzzfeed_threads_df[buzzfeed_threads_df['label'] == 1])
+        logger.info(f"Extracted {len(buzzfeed_threads_df)} Twitter threads from BuzzFeed")
+        logger.info(f"Label distribution: {true_count} mostly true, {false_count} mostly false")
+    else:
+        logger.warning("No Twitter threads extracted or label column not found")
     
     # Save to CSV if requested
-    if save_csv:
+    if save_csv and not buzzfeed_threads_df.empty:
         output_path = os.path.join(output_dir, "buzzfeed_twitter_threads.csv")
         buzzfeed_threads_df.to_csv(output_path, index=False)
         logger.info(f"Saved BuzzFeed Twitter threads to {output_path}")
@@ -148,10 +174,52 @@ def align_credbank_labels(
         logger.error("Could not import CREDBANK dataset module. Make sure dataset_credbank.py is available.")
         return pd.DataFrame()
     
+    # Check if the dataset is empty
+    if credbank_df.empty:
+        logger.error("CREDBANK dataset is empty")
+        return pd.DataFrame()
+    
+    # Log available columns for debugging
+    logger.info(f"Available columns in CREDBANK dataset: {', '.join(credbank_df.columns)}")
+    
+    # Identify the ratings column
+    ratings_column = None
+    possible_ratings_columns = ['ratings', 'accuracy_ratings', 'turkRatings', 'cred_ratings']
+    for col in possible_ratings_columns:
+        if col in credbank_df.columns:
+            ratings_column = col
+            break
+    
+    if ratings_column is None:
+        logger.error("No ratings column found in CREDBANK dataset")
+        return pd.DataFrame()
+    
+    logger.info(f"Using '{ratings_column}' as ratings column")
+    
     # Calculate mean accuracy rating for each event
-    credbank_df['mean_accuracy'] = credbank_df['ratings'].apply(
-        lambda x: np.mean([int(r) for r in eval(x)]) if isinstance(x, str) else np.nan
-    )
+    try:
+        credbank_df['mean_accuracy'] = credbank_df[ratings_column].apply(
+            lambda x: np.mean([int(r) for r in eval(x)]) if isinstance(x, str) else 
+            np.mean(x) if isinstance(x, list) else np.nan
+        )
+    except Exception as e:
+        logger.error(f"Error calculating mean accuracy: {str(e)}")
+        # Try an alternative approach
+        try:
+            credbank_df['mean_accuracy'] = credbank_df[ratings_column].apply(
+                lambda x: np.mean([int(r) for r in x.strip('[]').split(',')]) 
+                if isinstance(x, str) and '[' in x else np.nan
+            )
+        except Exception as e2:
+            logger.error(f"Alternative approach also failed: {str(e2)}")
+            return pd.DataFrame()
+    
+    # Drop NaN values
+    credbank_df = credbank_df.dropna(subset=['mean_accuracy'])
+    
+    if len(credbank_df) == 0:
+        logger.error("No valid mean accuracy ratings calculated")
+        return pd.DataFrame()
     
     # Calculate quantiles
     low_quantile = credbank_df['mean_accuracy'].quantile(quantile_threshold)
@@ -164,14 +232,23 @@ def align_credbank_labels(
                 f"High ({(1-quantile_threshold)*100}%): {high_quantile}")
     
     # Apply binary labeling using the convert_credbank_scale function
-    credbank_df['label_info'] = credbank_df['ratings'].apply(
-        lambda x: convert_credbank_scale(eval(x) if isinstance(x, str) else [])
-    )
-    
-    # Extract the components
-    credbank_df['label'] = credbank_df['label_info'].apply(lambda x: x[0])
-    credbank_df['confidence'] = credbank_df['label_info'].apply(lambda x: x[1])
-    credbank_df['is_valid'] = credbank_df['label_info'].apply(lambda x: x[2])
+    try:
+        credbank_df['label_info'] = credbank_df[ratings_column].apply(
+            lambda x: convert_credbank_scale(eval(x) if isinstance(x, str) else 
+                                           x if isinstance(x, list) else [])
+        )
+    except Exception as e:
+        logger.error(f"Error converting ratings scale: {str(e)}")
+        # Directly apply the quantile thresholds
+        credbank_df['label'] = np.nan
+        credbank_df.loc[credbank_df['mean_accuracy'] <= low_quantile, 'label'] = 1  # negative samples
+        credbank_df.loc[credbank_df['mean_accuracy'] >= high_quantile, 'label'] = 0  # positive samples
+        credbank_df['is_valid'] = ~credbank_df['label'].isna()
+    else:
+        # Extract the components
+        credbank_df['label'] = credbank_df['label_info'].apply(lambda x: x[0])
+        credbank_df['confidence'] = credbank_df['label_info'].apply(lambda x: x[1])
+        credbank_df['is_valid'] = credbank_df['label_info'].apply(lambda x: x[2])
     
     # Filter out invalid entries (those falling in the middle range)
     credbank_df_labeled = credbank_df[credbank_df['is_valid']].copy()
@@ -187,7 +264,7 @@ def align_credbank_labels(
     logger.info(f"Label distribution: {positive_count} positive (accurate), {negative_count} negative (inaccurate)")
     
     # Save to CSV if requested
-    if save_csv:
+    if save_csv and not credbank_df_labeled.empty:
         output_path = os.path.join(output_dir, "credbank_labeled.csv")
         credbank_df_labeled.to_csv(output_path, index=False)
         logger.info(f"Saved labeled CREDBANK dataset to {output_path}")
@@ -225,47 +302,94 @@ def capture_threaded_structure(
     os.makedirs(output_dir, exist_ok=True)
     
     # Initialize thread capture tool
-    thread_capture = ThreadCaptureTool(base_path=base_path)
+    try:
+        thread_capture = ThreadCaptureTool(base_path=base_path)
+    except Exception as e:
+        logger.error(f"Error initializing ThreadCaptureTool: {str(e)}")
+        logger.warning("Using fallback implementation without Twitter API access")
+        from utils.thread_capture import ThreadCaptureTool
+        thread_capture = ThreadCaptureTool(base_path=base_path)
     
     # Process CREDBANK dataset
     threaded_credbank_df = None
     if credbank_df is not None and not credbank_df.empty:
         logger.info("Processing CREDBANK threads...")
         
-        # Use the thread capture tool to identify most retweeted tweets and build threads
-        threaded_credbank_df = thread_capture.capture_credbank_threads(credbank_df)
-        
-        # Filter out threads with no reactions
-        reaction_count = threaded_credbank_df['num_reactions'].fillna(0)
-        threaded_credbank_df = threaded_credbank_df[reaction_count > 0].copy()
-        
-        # Log statistics
-        logger.info(f"CREDBANK threads after filtering: {len(threaded_credbank_df)}")
-        positive_count = len(threaded_credbank_df[threaded_credbank_df['label'] == 0])
-        negative_count = len(threaded_credbank_df[threaded_credbank_df['label'] == 1])
-        logger.info(f"Label distribution: {positive_count} positive, {negative_count} negative")
+        try:
+            # Use the thread capture tool to identify most retweeted tweets and build threads
+            threaded_credbank_df = thread_capture.capture_credbank_threads(credbank_df)
+            
+            # Check if the result is valid
+            if threaded_credbank_df is None or threaded_credbank_df.empty:
+                logger.warning("ThreadCaptureTool returned empty CREDBANK threads")
+                threaded_credbank_df = pd.DataFrame()
+            else:
+                # Filter out threads with no reactions
+                if 'num_reactions' in threaded_credbank_df.columns:
+                    reaction_count = threaded_credbank_df['num_reactions'].fillna(0)
+                    threaded_credbank_df = threaded_credbank_df[reaction_count > 0].copy()
+                else:
+                    logger.warning("'num_reactions' column not found in threaded CREDBANK data, skipping filtering")
+                
+                # Log statistics
+                logger.info(f"CREDBANK threads after filtering: {len(threaded_credbank_df)}")
+                if 'label' in threaded_credbank_df.columns:
+                    positive_count = len(threaded_credbank_df[threaded_credbank_df['label'] == 0])
+                    negative_count = len(threaded_credbank_df[threaded_credbank_df['label'] == 1])
+                    logger.info(f"Label distribution: {positive_count} positive, {negative_count} negative")
+        except Exception as e:
+            logger.error(f"Error capturing CREDBANK threads: {str(e)}")
+            threaded_credbank_df = pd.DataFrame()
     
     # Process BuzzFeed dataset
     threaded_buzzfeed_df = None
     if buzzfeed_df is not None and not buzzfeed_df.empty:
         logger.info("Processing BuzzFeed threads...")
         
-        # Use the thread capture tool to build threads from headline tweets
-        threaded_buzzfeed_df = thread_capture.capture_buzzfeed_threads(buzzfeed_df)
-        
-        # Log statistics
-        logger.info(f"BuzzFeed threads: {len(threaded_buzzfeed_df)}")
-        true_count = len(threaded_buzzfeed_df[threaded_buzzfeed_df['label'] == 0])
-        false_count = len(threaded_buzzfeed_df[threaded_buzzfeed_df['label'] == 1])
-        logger.info(f"Label distribution: {true_count} mostly true, {false_count} mostly false")
+        try:
+            # Use the thread capture tool to build threads from headline tweets
+            threaded_buzzfeed_df = thread_capture.capture_buzzfeed_threads(buzzfeed_df)
+            
+            # Check if the result is valid
+            if threaded_buzzfeed_df is None or threaded_buzzfeed_df.empty:
+                logger.warning("ThreadCaptureTool returned empty BuzzFeed threads")
+                threaded_buzzfeed_df = pd.DataFrame()
+            else:
+                # Log statistics
+                logger.info(f"BuzzFeed threads: {len(threaded_buzzfeed_df)}")
+                if 'label' in threaded_buzzfeed_df.columns:
+                    true_count = len(threaded_buzzfeed_df[threaded_buzzfeed_df['label'] == 0])
+                    false_count = len(threaded_buzzfeed_df[threaded_buzzfeed_df['label'] == 1])
+                    logger.info(f"Label distribution: {true_count} mostly true, {false_count} mostly false")
+        except Exception as e:
+            logger.error(f"Error capturing BuzzFeed threads: {str(e)}")
+            threaded_buzzfeed_df = pd.DataFrame()
+    
+    # Ensure we're returning DataFrames even if processing failed
+    threaded_credbank_df = threaded_credbank_df if threaded_credbank_df is not None else pd.DataFrame()
+    threaded_buzzfeed_df = threaded_buzzfeed_df if threaded_buzzfeed_df is not None else pd.DataFrame()
     
     # Save results if requested
-    if save_csv and (threaded_credbank_df is not None or threaded_buzzfeed_df is not None):
-        thread_capture.save_threaded_datasets(
-            credbank_threads=threaded_credbank_df,
-            buzzfeed_threads=threaded_buzzfeed_df,
-            output_dir=output_dir
-        )
+    if save_csv and (not threaded_credbank_df.empty or not threaded_buzzfeed_df.empty):
+        try:
+            # Check if the thread_capture tool has a save method
+            if hasattr(thread_capture, 'save_threaded_datasets'):
+                thread_capture.save_threaded_datasets(
+                    credbank_threads=threaded_credbank_df if not threaded_credbank_df.empty else None,
+                    buzzfeed_threads=threaded_buzzfeed_df if not threaded_buzzfeed_df.empty else None,
+                    output_dir=output_dir
+                )
+            else:
+                # Manual save if method doesn't exist
+                if not threaded_credbank_df.empty:
+                    threaded_credbank_df.to_csv(os.path.join(output_dir, "credbank_threaded.csv"), index=False)
+                    logger.info(f"Saved threaded CREDBANK dataset to {os.path.join(output_dir, 'credbank_threaded.csv')}")
+                
+                if not threaded_buzzfeed_df.empty:
+                    threaded_buzzfeed_df.to_csv(os.path.join(output_dir, "buzzfeed_threaded.csv"), index=False)
+                    logger.info(f"Saved threaded BuzzFeed dataset to {os.path.join(output_dir, 'buzzfeed_threaded.csv')}")
+        except Exception as e:
+            logger.error(f"Error saving threaded datasets: {str(e)}")
     
     return threaded_credbank_df, threaded_buzzfeed_df
 
@@ -291,29 +415,47 @@ def main(
     output_dir = output_dir or os.path.join(base_path, 'aligned')
     os.makedirs(output_dir, exist_ok=True)
     
+    # Initialize results
+    buzzfeed_threads = pd.DataFrame()
+    credbank_labeled = pd.DataFrame()
+    threaded_credbank = pd.DataFrame()
+    threaded_buzzfeed = pd.DataFrame()
+    pheme_df = pd.DataFrame()
+    credbank_features = pd.DataFrame()
+    buzzfeed_features = pd.DataFrame()
+    
     # Step 1: Extract Twitter threads from BuzzFeed Facebook data
-    buzzfeed_threads = extract_twitter_threads_from_buzzfeed(
-        base_path=os.path.join(base_path, 'buzzfeed'),
-        output_dir=output_dir,
-        save_csv=save_csv
-    )
+    try:
+        buzzfeed_threads = extract_twitter_threads_from_buzzfeed(
+            base_path=os.path.join(base_path, 'buzzfeed'),
+            output_dir=output_dir,
+            save_csv=save_csv
+        )
+    except Exception as e:
+        logger.error(f"Error extracting BuzzFeed Twitter threads: {str(e)}")
     
     # Step 2: Align CREDBANK labels
-    credbank_labeled = align_credbank_labels(
-        base_path=os.path.join(base_path, 'credbank'),
-        output_dir=output_dir,
-        save_csv=save_csv,
-        quantile_threshold=0.15  # Using the 15% quantile as specified in the paper
-    )
+    try:
+        credbank_labeled = align_credbank_labels(
+            base_path=os.path.join(base_path, 'credbank'),
+            output_dir=output_dir,
+            save_csv=save_csv,
+            quantile_threshold=0.15  # Using the 15% quantile as specified in the paper
+        )
+    except Exception as e:
+        logger.error(f"Error aligning CREDBANK labels: {str(e)}")
     
     # Step 3: Capture threaded structure for CREDBANK and BuzzFeed
-    threaded_credbank, threaded_buzzfeed = capture_threaded_structure(
-        credbank_df=credbank_labeled,
-        buzzfeed_df=buzzfeed_threads,
-        base_path=base_path,
-        output_dir=output_dir,
-        save_csv=save_csv
-    )
+    try:
+        threaded_credbank, threaded_buzzfeed = capture_threaded_structure(
+            credbank_df=credbank_labeled if not credbank_labeled.empty else None,
+            buzzfeed_df=buzzfeed_threads if not buzzfeed_threads.empty else None,
+            base_path=base_path,
+            output_dir=output_dir,
+            save_csv=save_csv
+        )
+    except Exception as e:
+        logger.error(f"Error capturing threaded structure: {str(e)}")
     
     # Load PHEME dataset
     try:
@@ -323,13 +465,16 @@ def main(
             output_dir=output_dir,
             save_csv=save_csv
         )
-        logger.info(f"Loaded PHEME dataset: {len(pheme_df)} threads")
-    except ImportError:
-        logger.error("Could not import PHEME dataset module. Make sure dataset_pheme.py is available.")
-        pheme_df = pd.DataFrame()
+        if pheme_df is None or pheme_df.empty:
+            logger.warning("PHEME dataset is empty")
+            pheme_df = pd.DataFrame()
+        else:
+            logger.info(f"Loaded PHEME dataset: {len(pheme_df)} threads")
+    except Exception as e:
+        logger.error(f"Error loading PHEME dataset: {str(e)}")
     
     # Load feature datasets for the threaded versions
-    if threaded_credbank is not None and not threaded_credbank.empty:
+    if not threaded_credbank.empty:
         try:
             from dataset_credbank import load_credbank_threaded_features_dataset
             credbank_features = load_credbank_threaded_features_dataset(
@@ -338,14 +483,16 @@ def main(
                 output_dir=output_dir,
                 save_csv=save_csv
             )
-            logger.info(f"Generated CREDBANK features: {len(credbank_features)} threads")
-        except ImportError:
-            logger.error("Could not generate CREDBANK features.")
+            if credbank_features is None or credbank_features.empty:
+                logger.warning("CREDBANK features dataset is empty")
+                credbank_features = pd.DataFrame()
+            else:
+                logger.info(f"Generated CREDBANK features: {len(credbank_features)} threads")
+        except Exception as e:
+            logger.error(f"Error generating CREDBANK features: {str(e)}")
             credbank_features = pd.DataFrame()
-    else:
-        credbank_features = pd.DataFrame()
     
-    if threaded_buzzfeed is not None and not threaded_buzzfeed.empty:
+    if not threaded_buzzfeed.empty:
         try:
             from dataset_buzzfeed import load_buzzfeed_threaded_features_dataset
             buzzfeed_features = load_buzzfeed_threaded_features_dataset(
@@ -354,12 +501,14 @@ def main(
                 output_dir=output_dir,
                 save_csv=save_csv
             )
-            logger.info(f"Generated BuzzFeed features: {len(buzzfeed_features)} threads")
-        except ImportError:
-            logger.error("Could not generate BuzzFeed features.")
+            if buzzfeed_features is None or buzzfeed_features.empty:
+                logger.warning("BuzzFeed features dataset is empty")
+                buzzfeed_features = pd.DataFrame()
+            else:
+                logger.info(f"Generated BuzzFeed features: {len(buzzfeed_features)} threads")
+        except Exception as e:
+            logger.error(f"Error generating BuzzFeed features: {str(e)}")
             buzzfeed_features = pd.DataFrame()
-    else:
-        buzzfeed_features = pd.DataFrame()
     
     # Align features across all datasets
     aligned_datasets = {}
@@ -374,19 +523,35 @@ def main(
         aligned_datasets['buzzfeed'] = buzzfeed_features
     
     # Final alignment of all datasets
+    aligned_result = {}
     if aligned_datasets:
-        from utils.dataset_alignment import align_datasets
-        aligned_result = align_datasets(
-            pheme_df=pheme_df if not pheme_df.empty else None,
-            buzzfeed_df=buzzfeed_features if not buzzfeed_features.empty else None,
-            credbank_df=credbank_features if not credbank_features.empty else None,
-            output_dir=output_dir,
-            save_csv=save_csv
-        )
-        logger.info("Dataset alignment complete!")
+        try:
+            from utils.dataset_alignment import align_datasets
+            aligned_result = align_datasets(
+                pheme_df=pheme_df if not pheme_df.empty else None,
+                buzzfeed_df=buzzfeed_features if not buzzfeed_features.empty else None,
+                credbank_df=credbank_features if not credbank_features.empty else None,
+                output_dir=output_dir,
+                save_csv=save_csv
+            )
+            logger.info("Dataset alignment complete!")
+        except Exception as e:
+            logger.error(f"Error in final dataset alignment: {str(e)}")
+            # Provide a fallback result if alignment fails
+            aligned_result = aligned_datasets
     else:
         logger.warning("No datasets were successfully loaded and aligned.")
         aligned_result = {}
+    
+    # Summarize the results
+    logger.info("\n=== Dataset Alignment Summary ===")
+    logger.info(f"BuzzFeed Twitter threads: {len(buzzfeed_threads)}")
+    logger.info(f"CREDBANK labeled events: {len(credbank_labeled)}")
+    logger.info(f"CREDBANK threaded events: {len(threaded_credbank)}")
+    logger.info(f"BuzzFeed threaded events: {len(threaded_buzzfeed)}")
+    logger.info(f"PHEME dataset size: {len(pheme_df)}")
+    logger.info(f"Aligned datasets: {list(aligned_result.keys())}")
+    logger.info("===============================")
     
     return aligned_result
 
