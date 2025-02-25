@@ -94,7 +94,25 @@ def extract_twitter_threads_from_buzzfeed(
     else:
         # If neither is available, create a composite engagement score
         logger.warning("No direct engagement metric found. Creating a composite score.")
-        buzzfeed_df['engagement_score'] = buzzfeed_df['paragraph_count'].fillna(0)
+        # Use a safe approach - check if columns exist before using them
+        composite_columns = []
+        if 'paragraph_count' in buzzfeed_df.columns:
+            composite_columns.append('paragraph_count')
+        if 'share_count' in buzzfeed_df.columns:
+            composite_columns.append('share_count')
+        if 'reaction_count' in buzzfeed_df.columns:
+            composite_columns.append('reaction_count')
+            
+        # If we have no usable columns, add a dummy column
+        if not composite_columns:
+            logger.warning("No engagement metrics found. Using row index as fallback.")
+            buzzfeed_df['engagement_score'] = buzzfeed_df.index
+        else:
+            # Sum all available metrics
+            buzzfeed_df['engagement_score'] = 0
+            for col in composite_columns:
+                buzzfeed_df['engagement_score'] += buzzfeed_df[col].fillna(0)
+                
         engagement_metric = 'engagement_score'
     
     logger.info(f"Using '{engagement_metric}' as engagement metric for sorting")
