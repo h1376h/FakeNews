@@ -16,6 +16,7 @@ from utils.features import (
     CredbankTemporalFeatureExtractor
 )
 from utils.dataset_alignment import save_feature_sets
+from utils.thread_capture import ThreadCaptureTool
 
 # CREDBANK dataset processor for credibility assessment using social media features
 def process_list_column(column_data):
@@ -342,6 +343,121 @@ def prepare_df_for_analysis(df: pd.DataFrame) -> pd.DataFrame:
             analysis_df[column] = analysis_df[column].apply(str)
     return analysis_df
 
+# Loads CREDBANK dataset with threaded structure for better alignment with PHEME
+def load_credbank_threaded_dataset(extended_dataset: Union[pd.DataFrame, str, None] = None, 
+                                 base_path: str = 'data/credbank', 
+                                 output_dir: str = None, 
+                                 save_csv: bool = False) -> pd.DataFrame:
+    """Load or create the CREDBANK dataset with threaded structure.
+    This function adapts CREDBANK's tweet sets into threads similar to PHEME's format.
+    - Identifies the most retweeted tweet in each event as the thread root
+    - Collects other tweets as reactions
+    - Discards threads with no reactions
+    
+    Args:
+        extended_dataset: Either a DataFrame from load_credbank_dataset_extended or a path to a CSV file
+        base_path: Path to the CREDBANK dataset directory
+        output_dir: Directory to save output files (defaults to base_path if None)
+        save_csv: Whether to save intermediate CSV files
+        
+    Returns:
+        DataFrame containing CREDBANK data with threaded structure
+    """
+    # Use base_path as output_dir if not specified
+    output_dir = output_dir or base_path
+    
+    # Check if threaded dataset already exists
+    threaded_file = os.path.join(output_dir, 'credbank_threaded_dataset.csv')
+    if os.path.exists(threaded_file):
+        print(f"Loading existing threaded dataset from: {threaded_file}")
+        return pd.read_csv(threaded_file)
+    
+    # Load extended dataset if needed
+    if extended_dataset is None:
+        if isinstance(extended_dataset, str) and os.path.exists(extended_dataset):
+            extended_dataset = pd.read_csv(extended_dataset)
+        else:
+            print("Loading extended dataset first...")
+            extended_dataset = load_credbank_dataset_extended(base_path=base_path, output_dir=output_dir, save_csv=save_csv)
+    
+    # Initialize thread capture tool
+    thread_tool = ThreadCaptureTool(os.path.dirname(base_path))
+    
+    # Capture threaded structure
+    print("Capturing CREDBANK threads...")
+    threaded_df = thread_tool.capture_credbank_threads(extended_dataset)
+    
+    # Save if requested
+    if save_csv:
+        threaded_df.to_csv(threaded_file, index=False)
+        print(f"Saved threaded dataset to: {threaded_file}")
+    
+    print(f"Created {len(threaded_df)} threads from CREDBANK dataset")
+    print(f"  - Positive samples: {threaded_df[threaded_df['label'] == 1].shape[0]}")
+    print(f"  - Negative samples: {threaded_df[threaded_df['label'] == 0].shape[0]}")
+    
+    return threaded_df
+
+# Extracts features from CREDBANK threaded dataset for better alignment with PHEME
+def load_credbank_threaded_features_dataset(threaded_dataset: Union[pd.DataFrame, str, None] = None, 
+                                          base_path: str = 'data/credbank', 
+                                          output_dir: str = None, 
+                                          save_csv: bool = False,
+                                          include_additional_features: bool = False) -> pd.DataFrame:
+    """Load or create the features dataset from CREDBANK threaded data.
+    
+    Args:
+        threaded_dataset: Either a DataFrame from load_credbank_threaded_dataset or a path to a CSV file
+        base_path: Path to the CREDBANK dataset directory
+        output_dir: Directory to save output files (defaults to base_path if None)
+        save_csv: Whether to save intermediate CSV files
+        include_additional_features: Whether to include additional features
+        
+    Returns:
+        DataFrame containing only the extracted features, source, and label
+    """
+    # Use base_path as output_dir if not specified
+    output_dir = output_dir or base_path
+    
+    # Load threaded dataset if needed
+    if threaded_dataset is None:
+        if isinstance(threaded_dataset, str) and os.path.exists(threaded_dataset):
+            threaded_dataset = pd.read_csv(threaded_dataset)
+        else:
+            print("Loading threaded dataset first...")
+            threaded_dataset = load_credbank_threaded_dataset(base_path=base_path, output_dir=output_dir, save_csv=save_csv)
+    
+    # Extract all features
+    print("Extracting features from threaded dataset...")
+    df_with_features = extract_all_features(threaded_dataset, include_additional_features)
+    
+    # Get feature columns
+    feature_columns = [col for col in df_with_features.columns if any(
+        col.startswith(prefix) for prefix in 
+        ['structural_', 'user_', 'content_', 'temporal_']
+    )]
+    
+    # Create features DataFrame
+    features_df = df_with_features[feature_columns].copy()
+    features_df.insert(0, 'source', 'credbank_threaded')
+    features_df['label'] = df_with_features['label']
+    
+    # Save if requested
+    if save_csv:
+        os.makedirs(output_dir, exist_ok=True)
+        # Use a different name to distinguish from regular features
+        output_path = os.path.join(output_dir, 'credbank_threaded_paper_features.csv')
+        features_df.to_csv(output_path, index=False)
+        print(f"Saved threaded features to: {output_path}")
+        
+        # Also save with all_features suffix for consistency
+        if include_additional_features:
+            all_features_path = os.path.join(output_dir, 'credbank_threaded_all_features.csv')
+            features_df.to_csv(all_features_path, index=False)
+            print(f"Saved all threaded features to: {all_features_path}")
+    
+    return features_df
+
 # Main execution function to process CREDBANK dataset and generate analysis reports
 def main():
     """Main execution function"""
@@ -359,42 +475,24 @@ def main():
     print("\nCreating extended dataset...")
     extended_df = load_credbank_dataset_extended(raw_df, output_dir=output_dir, save_csv=True)
     
-    # Extract all features once
+    # Extract features
     print("\nExtracting features...")
-    all_features_df = load_credbank_features_dataset(extended_df, output_dir=output_dir, save_csv=False, include_additional_features=True)
-
-    # Split into paper and all features using dataset_alignment.save_feature_sets
-    paper_features_df, all_features_df = save_feature_sets(all_features_df, output_dir, 'credbank')
-
-    # Generate analysis report
-    try:
-        analysis_df = prepare_df_for_analysis(paper_features_df)
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore')
-            sweet_report = sv.analyze(analysis_df)
-            output_path = os.path.join(output_dir, 'credbank_paper_features_analysis_report.html')
-            sweet_report.show_html(output_path) # Could use sweet_report.show_notebook()
-            print(f"Analysis report saved to: {output_path}")
-    except Exception as e:
-        print(f"Warning: Could not generate Sweetviz report. Error: {str(e)}")
-
-    # Generate analysis report
-    try:
-        analysis_df = prepare_df_for_analysis(all_features_df)
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore')
-            sweet_report = sv.analyze(analysis_df)
-            output_path = os.path.join(output_dir, 'credbank_all_features_analysis_report.html')
-            sweet_report.show_html(output_path) # Could use sweet_report.show_notebook()
-            print(f"Analysis report saved to: {output_path}")
-    except Exception as e:
-        print(f"Warning: Could not generate Sweetviz report. Error: {str(e)}")
+    all_features_df = load_credbank_features_dataset(extended_df, output_dir=output_dir, save_csv=True, include_additional_features=True)
+    
+    # Create threaded dataset
+    print("\nCreating threaded dataset...")
+    threaded_df = load_credbank_threaded_dataset(extended_df, output_dir=output_dir, save_csv=True)
+    
+    # Extract features from threaded dataset
+    print("\nExtracting features from threaded dataset...")
+    threaded_features_df = load_credbank_threaded_features_dataset(threaded_df, output_dir=output_dir, save_csv=True, include_additional_features=True)
     
     print("\nDataset processing complete!")
     print(f"Raw dataset shape: {raw_df.shape}")
     print(f"Extended dataset shape: {extended_df.shape}")
-    print(f"Paper features shape: {paper_features_df.shape}")
-    print(f"All features shape: {all_features_df.shape}")
+    print(f"Features dataset shape: {all_features_df.shape}")
+    print(f"Threaded dataset shape: {threaded_df.shape}")
+    print(f"Threaded features dataset shape: {threaded_features_df.shape}")
 
 if __name__ == "__main__":
     warnings.filterwarnings('ignore')
