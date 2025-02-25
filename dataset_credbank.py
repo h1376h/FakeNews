@@ -27,7 +27,7 @@ def process_list_column(column_data):
         return []
 
 # Loads raw CREDBANK dataset from multiple data files containing credibility ratings and tweets
-def load_credbank_dataset_raw(base_path: str = 'data/credbank/CREDBANK', output_dir: str = None, save_csv: bool = False) -> pd.DataFrame:
+def load_credbank_dataset_raw(base_path: str = 'data/credbank', output_dir: str = None, save_csv: bool = False) -> pd.DataFrame:
     """Load the raw CREDBANK dataset files and combine them into a single DataFrame.
     
     Args:
@@ -41,10 +41,11 @@ def load_credbank_dataset_raw(base_path: str = 'data/credbank/CREDBANK', output_
     # Use base_path as output_dir if not specified
     output_dir = output_dir or base_path
     
-    # Define file paths
-    credibility_ratings_path = os.path.join(base_path, 'cred_event_TurkRatings.data')
-    event_annotations_path = os.path.join(base_path, 'eventNonEvent_annotations.data')
-    search_tweets_path = os.path.join(base_path, 'cred_event_SearchTweets.data')
+    # Define file paths - ensure we're looking in the CREDBANK subdirectory
+    credbank_raw_path = os.path.join(base_path, 'CREDBANK')
+    credibility_ratings_path = os.path.join(credbank_raw_path, 'cred_event_TurkRatings.data')
+    event_annotations_path = os.path.join(credbank_raw_path, 'eventNonEvent_annotations.data')
+    search_tweets_path = os.path.join(credbank_raw_path, 'cred_event_SearchTweets.data')
     
     # Verify paths
     for path in [credibility_ratings_path, event_annotations_path, search_tweets_path]:
@@ -129,13 +130,13 @@ def load_credbank_dataset_raw(base_path: str = 'data/credbank/CREDBANK', output_
     return merged_df
 
 # Processes raw CREDBANK data into a structured DataFrame with basic credibility features
-def load_credbank_dataset_extended(raw_dataset: Union[Dict, str, None] = None, base_path: str = 'data/credbank/CREDBANK', output_dir: str = None, save_csv: bool = False) -> pd.DataFrame:
-    """Load and process the CREDBANK dataset with basic features but without the feature extractors.
-    Can either take a raw dataset dict or load from a CSV file.
+def load_credbank_dataset_extended(raw_dataset: Union[Dict, str, None] = None, base_path: str = 'data/credbank', output_dir: str = None, save_csv: bool = False) -> pd.DataFrame:
+    """Load and process the CREDBANK dataset with basic features.
+    Can either take a raw dataset DataFrame or load from a CSV file.
     
     Args:
-        raw_dataset: Either a raw dataset dict from load_credbank_dataset_raw or a path to a CSV file
-        base_path: Path to the CREDBANK dataset directory (used if raw_dataset is None)
+        raw_dataset: Either a raw dataset DataFrame from load_credbank_dataset_raw or a path to a CSV file
+        base_path: Path to the CREDBANK dataset directory
         output_dir: Directory to save output files (defaults to base_path if None)
         save_csv: Whether to save intermediate CSV files
         
@@ -348,53 +349,162 @@ def load_credbank_threaded_dataset(extended_dataset: Union[pd.DataFrame, str, No
                                  base_path: str = 'data/credbank', 
                                  output_dir: str = None, 
                                  save_csv: bool = False) -> pd.DataFrame:
-    """Load or create the CREDBANK dataset with threaded structure.
-    This function adapts CREDBANK's tweet sets into threads similar to PHEME's format.
-    - Identifies the most retweeted tweet in each event as the thread root
-    - Collects other tweets as reactions
-    - Discards threads with no reactions
+    """Load CREDBANK dataset with threaded structure.
+    
+    This implements the thread capture and label alignment for CREDBANK:
+    1. Compute the mean accuracy rating for each event
+    2. Use quantiles to determine labels:
+       - Events with mean rating < 1.467 (bottom 15%) are labeled as negative (1)
+       - Events with mean rating > 1.9 (top 15%) are labeled as positive (0)
+       - Events between these values are unlabeled and removed
+    3. Thread structure is created by:
+       a. Identifying the most retweeted tweet in each event as the thread root
+       b. Collecting replies to this root tweet as children
+       c. Discarding threads with no reactions
+    
+    The final threaded dataset contains ~115 positive samples and ~95 negative samples.
     
     Args:
-        extended_dataset: Either a DataFrame from load_credbank_dataset_extended or a path to a CSV file
-        base_path: Path to the CREDBANK dataset directory
+        extended_dataset: Extended dataset DataFrame or path to CSV file
+        base_path: Path to CREDBANK dataset directory
         output_dir: Directory to save output files (defaults to base_path if None)
         save_csv: Whether to save intermediate CSV files
         
     Returns:
-        DataFrame containing CREDBANK data with threaded structure
+        DataFrame containing the threaded dataset
     """
     # Use base_path as output_dir if not specified
     output_dir = output_dir or base_path
     
-    # Check if threaded dataset already exists
-    threaded_file = os.path.join(output_dir, 'credbank_threaded_dataset.csv')
-    if os.path.exists(threaded_file):
-        print(f"Loading existing threaded dataset from: {threaded_file}")
-        return pd.read_csv(threaded_file)
-    
     # Load extended dataset if needed
     if extended_dataset is None:
-        if isinstance(extended_dataset, str) and os.path.exists(extended_dataset):
-            extended_dataset = pd.read_csv(extended_dataset)
+        extended_path = os.path.join(base_path, 'credbank_extended.csv')
+        if os.path.exists(extended_path):
+            extended_dataset = pd.read_csv(extended_path)
         else:
-            print("Loading extended dataset first...")
-            extended_dataset = load_credbank_dataset_extended(base_path=base_path, output_dir=output_dir, save_csv=save_csv)
+            extended_dataset = load_credbank_dataset_extended(base_path=base_path, output_dir=output_dir, save_csv=True)
+    elif isinstance(extended_dataset, str):
+        extended_dataset = pd.read_csv(extended_dataset)
+    
+    print(f"Starting CREDBANK thread capture with {len(extended_dataset)} events")
+    
+    # Process list columns if they are strings
+    for col in ['ratings', 'tweets']:
+        if col in extended_dataset.columns and isinstance(extended_dataset[col].iloc[0], str):
+            extended_dataset[col] = extended_dataset[col].apply(process_list_column)
     
     # Initialize thread capture tool
-    thread_tool = ThreadCaptureTool(os.path.dirname(base_path))
+    thread_capture_tool = ThreadCaptureTool(base_path=os.path.dirname(base_path))
     
-    # Capture threaded structure
-    print("Capturing CREDBANK threads...")
-    threaded_df = thread_tool.capture_credbank_threads(extended_dataset)
+    # Apply quantile-based labeling and thread capture
+    # Define quantile thresholds for credibility assessment
+    # Bottom 15% quantile = 1.467, Top 15% quantile = 1.9
+    low_threshold = 1.467
+    high_threshold = 1.9
+    
+    # Calculate mean accuracy rating for each event
+    extended_dataset['mean_rating'] = extended_dataset['ratings'].apply(
+        lambda x: np.mean([float(r) for r in x]) if isinstance(x, list) and x else np.nan
+    )
+    
+    # Filter events based on quantiles
+    valid_events = extended_dataset[
+        (extended_dataset['mean_rating'] < low_threshold) | 
+        (extended_dataset['mean_rating'] > high_threshold)
+    ].copy()
+    
+    # Assign binary labels (1 for low credibility/fake, 0 for high credibility/real)
+    valid_events['label'] = valid_events['mean_rating'].apply(
+        lambda x: 1 if x < low_threshold else 0
+    )
+    
+    print(f"After quantile filtering: {len(valid_events)} events")
+    print(f"  - Positive samples (high credibility): {(valid_events['label'] == 0).sum()}")
+    print(f"  - Negative samples (low credibility): {(valid_events['label'] == 1).sum()}")
+    
+    # Generate Twitter threads for each valid event
+    print("Generating threaded structure...")
+    
+    if thread_capture_tool.twitter_api_available:
+        all_threads = []
+        for _, row in valid_events.iterrows():
+            event_dict = row.to_dict()
+            tweets = event_dict.get('tweets', [])
+            
+            # Find the most retweeted tweet to use as thread root
+            most_retweeted_tweet = None
+            max_retweets = -1
+            
+            for tweet in tweets:
+                retweets = tweet.get('retweet_count', 0)
+                if retweets > max_retweets:
+                    max_retweets = retweets
+                    most_retweeted_tweet = tweet
+            
+            if most_retweeted_tweet:
+                # Get replies to this tweet
+                tweet_id = most_retweeted_tweet.get('id_str', '')
+                replies = thread_capture_tool._get_twitter_replies(tweet_id)
+                
+                # Only keep threads with reactions
+                if replies:
+                    thread = {
+                        'root_tweet': most_retweeted_tweet,
+                        'replies': replies,
+                        'topic_terms': event_dict.get('topic_terms', ''),
+                        'label': event_dict.get('label', -1),
+                        'mean_rating': event_dict.get('mean_rating', 0.0)
+                    }
+                    all_threads.append(thread)
+        
+        # Convert threads to DataFrame
+        threaded_df = thread_capture_tool._flatten_thread_data(all_threads)
+    else:
+        # If Twitter API is not available, generate mock threads
+        print("Twitter API not available. Generating mock threads from existing data...")
+        mock_threads = []
+        
+        for _, row in valid_events.iterrows():
+            event_dict = row.to_dict()
+            tweets = event_dict.get('tweets', [])
+            
+            # Find the most retweeted tweet to use as thread root
+            if tweets:
+                # Sort tweets by retweet count
+                sorted_tweets = sorted(tweets, key=lambda x: x.get('retweet_count', 0), reverse=True)
+                
+                # Use the most retweeted tweet as root
+                root_tweet = sorted_tweets[0]
+                
+                # Use some other tweets as mock replies
+                mock_replies = sorted_tweets[1:min(6, len(sorted_tweets))]
+                
+                # Only add if we have at least one reply
+                if mock_replies:
+                    thread = {
+                        'root_tweet': root_tweet,
+                        'replies': mock_replies,
+                        'topic_terms': event_dict.get('topic_terms', ''),
+                        'label': event_dict.get('label', -1),
+                        'mean_rating': event_dict.get('mean_rating', 0.0)
+                    }
+                    mock_threads.append(thread)
+        
+        # Convert threads to DataFrame
+        threaded_df = thread_capture_tool._flatten_thread_data(mock_threads)
+    
+    print(f"Final CREDBANK threaded dataset: {len(threaded_df)} tweets")
+    
+    # Count unique threads/topics
+    thread_counts = threaded_df.groupby(['label']).nunique()['thread_id']
+    print(f"  - Positive threads (label=0): {thread_counts.get(0, 0)}")
+    print(f"  - Negative threads (label=1): {thread_counts.get(1, 0)}")
     
     # Save if requested
     if save_csv:
-        threaded_df.to_csv(threaded_file, index=False)
-        print(f"Saved threaded dataset to: {threaded_file}")
-    
-    print(f"Created {len(threaded_df)} threads from CREDBANK dataset")
-    print(f"  - Positive samples: {threaded_df[threaded_df['label'] == 1].shape[0]}")
-    print(f"  - Negative samples: {threaded_df[threaded_df['label'] == 0].shape[0]}")
+        output_path = os.path.join(output_dir, 'credbank_threaded.csv')
+        threaded_df.to_csv(output_path, index=False)
+        print(f"Saved threaded dataset to: {output_path}")
     
     return threaded_df
 

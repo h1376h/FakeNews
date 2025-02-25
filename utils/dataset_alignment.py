@@ -5,11 +5,19 @@ from typing import Dict, List, Tuple, Any, Union
 from textblob import TextBlob
 from collections import defaultdict
 
-def align_buzzfeed_threads(article_data: Dict) -> List[Dict]:
+def align_buzzfeed_threads(article_data: Dict, thread_capture_tool=None) -> List[Dict]:
     """Extract and align Twitter threads from BuzzFeed articles.
+    
+    As described in the paper:
+    1. Extract the 10 most shared stories from left-wing pages
+    2. Extract the 10 most shared stories from right-wing pages
+    3. Search Twitter for these headlines
+    4. Keep the top 3 most retweeted posts for each headline
+    5. This results in 35 topics with journalist-provided labels (15 "mostly true", 20 "mostly false")
     
     Args:
         article_data: Dictionary containing article data including text and metadata
+        thread_capture_tool: ThreadCaptureTool instance for Twitter API access
         
     Returns:
         List of dictionaries containing aligned thread data
@@ -17,23 +25,52 @@ def align_buzzfeed_threads(article_data: Dict) -> List[Dict]:
     threads = []
     
     # Extract main text and metadata
+    title = article_data.get('title', '')
     main_text = article_data.get('mainText', '')
     veracity = article_data.get('veracity', '')
     orientation = article_data.get('orientation', '')
     
-    # Convert veracity to binary label
+    # Convert veracity to binary label (1 for fake, 0 for real)
+    # 'mostly false', 'mixture of true and false', 'no factual content' -> 1 (fake)
+    # 'mostly true' -> 0 (real)
     label = 1 if veracity in ['mostly false', 'mixture of true and false', 'no factual content'] else 0
     
-    # Create thread entry
-    thread = {
-        'source': 'buzzfeed',
-        'text': main_text,
-        'label': label,
-        'orientation': orientation,
-        'veracity': veracity
-    }
+    # If we have a thread capture tool, use it to search Twitter for headlines
+    if thread_capture_tool is not None and hasattr(thread_capture_tool, '_search_twitter_for_headline'):
+        # Search Twitter for the headline
+        twitter_threads = thread_capture_tool._search_twitter_for_headline(title)
+        
+        # Keep the top 3 most retweeted posts
+        top_tweets = sorted(twitter_threads, key=lambda x: x.get('retweet_count', 0), reverse=True)[:3]
+        
+        # Create threads from top tweets
+        for tweet in top_tweets:
+            thread = {
+                'source': 'buzzfeed',
+                'text': tweet.get('text', ''),
+                'headline': title,
+                'label': label,
+                'orientation': orientation,
+                'veracity': veracity,
+                'retweet_count': tweet.get('retweet_count', 0),
+                'favorite_count': tweet.get('favorite_count', 0),
+                'tweet_id': tweet.get('id_str', ''),
+                'user_id': tweet.get('user', {}).get('id_str', ''),
+                'user_name': tweet.get('user', {}).get('screen_name', '')
+            }
+            threads.append(thread)
+    else:
+        # If no thread capture tool or API access, create thread directly from article data
+        thread = {
+            'source': 'buzzfeed',
+            'text': main_text,
+            'headline': title,
+            'label': label,
+            'orientation': orientation,
+            'veracity': veracity
+        }
+        threads.append(thread)
     
-    threads.append(thread)
     return threads
 
 def align_pheme_threads(thread_data: Dict) -> List[Dict]:
@@ -72,32 +109,58 @@ def align_pheme_threads(thread_data: Dict) -> List[Dict]:
     threads.append(thread)
     return threads
 
-def convert_credbank_scale(ratings: List[int]) -> Tuple[int, float]:
-    """Convert CREDBANK's 5-point Likert scale to binary labels and confidence scores.
+def convert_credbank_scale(ratings: List[int]) -> Tuple[int, float, bool]:
+    """Convert CREDBANK's 5-point Likert scale to binary labels based on quantiles.
+    
+    As described in the paper:
+    - The grand mean of CREDBANK's accuracy assessments is 1.7
+    - The median is 1.767
+    - The 25th and 75th quartiles are 1.6 and 1.867 respectively
+    - Events below the 15% quantile (mean rating < 1.467) are labeled as negative (1)
+    - Events above the 85% quantile (mean rating > 1.9) are labeled as positive (0)
+    - Events between these values are unlabeled and removed
     
     Args:
         ratings: List of integer ratings from -2 to 2
         
     Returns:
-        Tuple of (binary_label, confidence_score)
+        Tuple of (binary_label, confidence_score, is_valid)
+        where is_valid is False if the rating falls in the unlabeled range
     """
     # Convert string ratings to integers and then to numpy array
     try:
         ratings = np.array([int(r) for r in ratings])
     except (ValueError, TypeError):
         # Handle invalid ratings by returning default values
-        return 0, 0.0
+        return 0, 0.0, False
     
     # Calculate mean rating
     mean_rating = np.mean(ratings)
     
-    # Convert to binary label (1 for fake, 0 for real)
-    binary_label = 1 if mean_rating < 0 else 0
+    # Define quantile thresholds for credibility assessment
+    # Bottom 15% quantile = 1.467, Top 15% quantile = 1.9
+    low_threshold = 1.467
+    high_threshold = 1.9
     
-    # Calculate confidence score (absolute mean normalized to [0,1])
+    # Convert to binary label (1 for fake/negative, 0 for real/positive)
+    # Also determine if the event should be included in the dataset
+    if mean_rating < low_threshold:
+        # Below bottom 15% quantile - negative event (low credibility)
+        binary_label = 1
+        is_valid = True
+    elif mean_rating > high_threshold:
+        # Above top 15% quantile - positive event (high credibility)
+        binary_label = 0
+        is_valid = True
+    else:
+        # In between - unlabeled
+        binary_label = -1
+        is_valid = False
+    
+    # Calculate confidence score (absolute distance from neutral value 0)
     confidence = abs(mean_rating) / 2.0
     
-    return binary_label, confidence
+    return binary_label, confidence, is_valid
 
 def calculate_disagreement_score(texts: List[str]) -> float:
     """Calculate disagreement score based on sentiment analysis of reactions.
@@ -229,3 +292,94 @@ def align_datasets(pheme_df: pd.DataFrame = None, buzzfeed_df: pd.DataFrame = No
             datasets['combined_all'] = combined_all
     
     return datasets
+
+def align_credbank_threads(event_data: Dict, thread_capture_tool=None) -> List[Dict]:
+    """Extract and align Twitter threads from CREDBANK events.
+    
+    As described in the paper:
+    1. Identify the most retweeted tweet in each event as the thread root
+    2. Collect replies to this root tweet as children
+    3. Discard threads with no reactions
+    
+    For label alignment:
+    - Events with average accuracy < 1.467 (bottom 15%) are labeled negative (1)
+    - Events with average accuracy > 1.9 (top 15%) are labeled positive (0)
+    - Events between these values are unlabeled and removed
+    
+    Args:
+        event_data: Dictionary containing event data including tweets and ratings
+        thread_capture_tool: ThreadCaptureTool instance for Twitter API access
+        
+    Returns:
+        List of dictionaries containing aligned thread data, empty if the event 
+        should be discarded based on rating quantiles
+    """
+    threads = []
+    
+    # Extract event data
+    topic_terms = event_data.get('topic_terms', '')
+    ratings = event_data.get('ratings', [])
+    tweets = event_data.get('tweets', [])
+    
+    # Convert ratings to binary label
+    binary_label, confidence, is_valid = convert_credbank_scale(ratings)
+    
+    # If rating is in the unlabeled range, return empty list
+    if not is_valid:
+        return []
+    
+    # Find the most retweeted tweet in the event to use as thread root
+    most_retweeted_tweet = None
+    most_retweets = -1
+    
+    for tweet in tweets:
+        retweet_count = tweet.get('retweet_count', 0)
+        if retweet_count > most_retweets:
+            most_retweets = retweet_count
+            most_retweeted_tweet = tweet
+    
+    # If we couldn't find a valid tweet, return empty list
+    if most_retweeted_tweet is None:
+        return []
+    
+    # If we have a thread capture tool, use it to get replies
+    if thread_capture_tool is not None and hasattr(thread_capture_tool, '_get_twitter_replies'):
+        tweet_id = most_retweeted_tweet.get('id_str', '')
+        replies = thread_capture_tool._get_twitter_replies(tweet_id)
+        
+        # If no replies, set an empty list
+        if not replies:
+            replies = []
+        
+        # Create thread from root tweet and replies
+        thread = {
+            'source': 'credbank',
+            'text': most_retweeted_tweet.get('text', ''),
+            'topic_terms': topic_terms,
+            'label': binary_label,
+            'confidence': confidence,
+            'retweet_count': most_retweets,
+            'tweet_id': tweet_id,
+            'user_id': most_retweeted_tweet.get('user', {}).get('id_str', ''),
+            'user_name': most_retweeted_tweet.get('user', {}).get('screen_name', ''),
+            'replies': replies,
+            'reply_count': len(replies)
+        }
+        
+        # Only add threads with reactions
+        if len(replies) > 0:
+            threads.append(thread)
+    else:
+        # If no thread capture tool or API access, create thread directly from tweet data
+        thread = {
+            'source': 'credbank',
+            'text': most_retweeted_tweet.get('text', ''),
+            'topic_terms': topic_terms,
+            'label': binary_label,
+            'confidence': confidence,
+            'retweet_count': most_retweets,
+            'tweet_id': most_retweeted_tweet.get('id_str', '')
+        }
+        threads.append(thread)
+    
+    return threads

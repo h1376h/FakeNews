@@ -274,76 +274,101 @@ def load_buzzfeed_threaded_dataset(extended_dataset: Union[pd.DataFrame, str, No
                                  base_path: str = 'data/buzzfeed', 
                                  output_dir: str = None, 
                                  save_csv: bool = False) -> pd.DataFrame:
-    """Load or create the BuzzFeed dataset with threaded structure.
-    This function adapts BuzzFeed's Facebook data into Twitter threads through the following process:
-    1. Extracting the 10 most shared stories from left-wing pages
-    2. Extracting the 10 most shared stories from right-wing pages
-    3. Searching Twitter for these headlines
-    4. Keeping the top 3 most retweeted posts for each headline
-    5. Results in 35 topics with journalist-provided labels (15 "mostly true" and 20 "mostly false")
+    """Load BuzzFeed dataset with threaded structure.
     
-    This approach aligns the BuzzFeed Facebook dataset with the Twitter-based datasets (PHEME and CREDBANK),
-    allowing for consistent feature extraction and model comparison across datasets.
-    
+    This implements the extraction of Twitter threads from BuzzFeed's Facebook dataset:
+    1. Extract the 10 most shared stories from left-wing pages
+    2. Extract the 10 most shared stories from right-wing pages
+    3. Search Twitter for these headlines
+    4. Keep the top 3 most retweeted posts for each headline
+    5. This results in approximately 35 topics with journalist-provided labels
+       (15 "mostly true", 20 "mostly false")
+       
     Args:
-        extended_dataset: Either a DataFrame from load_buzzfeed_dataset_extended or a path to a CSV file
-        base_path: Path to the BuzzFeed dataset directory
+        extended_dataset: Extended dataset DataFrame or path to CSV file
+        base_path: Path to BuzzFeed dataset directory
         output_dir: Directory to save output files (defaults to base_path if None)
         save_csv: Whether to save intermediate CSV files
         
     Returns:
-        DataFrame containing BuzzFeed data with Twitter-aligned threaded structure
+        DataFrame containing the threaded dataset
     """
     # Use base_path as output_dir if not specified
     output_dir = output_dir or base_path
     
-    # Check if threaded dataset already exists
-    threaded_file = os.path.join(output_dir, 'buzzfeed_threaded_dataset.csv')
-    if os.path.exists(threaded_file):
-        print(f"Loading existing threaded dataset from: {threaded_file}")
-        threaded_df = pd.read_csv(threaded_file)
-        print(f"Loaded {len(threaded_df)} threads from BuzzFeed dataset")
-        true_count = threaded_df[threaded_df['label'] == 0].drop_duplicates('thread_id').shape[0]
-        false_count = threaded_df[threaded_df['label'] == 1].drop_duplicates('thread_id').shape[0]
-        print(f"  - Positive samples (fake/mostly false): {false_count}")
-        print(f"  - Negative samples (real/mostly true): {true_count}")
-        return threaded_df
-    
     # Load extended dataset if needed
     if extended_dataset is None:
-        if isinstance(extended_dataset, str) and os.path.exists(extended_dataset):
-            extended_dataset = pd.read_csv(extended_dataset)
+        extended_path = os.path.join(base_path, 'buzzfeed_extended.csv')
+        if os.path.exists(extended_path):
+            extended_dataset = pd.read_csv(extended_path)
         else:
-            print("Loading extended dataset first...")
-            extended_dataset = load_buzzfeed_dataset_extended(base_path=base_path, output_dir=output_dir, save_csv=save_csv)
+            extended_dataset = load_buzzfeed_dataset_extended(base_path=base_path, output_dir=output_dir, save_csv=True)
+    elif isinstance(extended_dataset, str):
+        extended_dataset = pd.read_csv(extended_dataset)
+    
+    print(f"Starting BuzzFeed thread capture with {len(extended_dataset)} articles")
     
     # Initialize thread capture tool
-    thread_tool = ThreadCaptureTool(os.path.dirname(base_path))
+    thread_capture_tool = ThreadCaptureTool(base_path=os.path.dirname(base_path))
     
-    # Capture threaded structure from Twitter based on the BuzzFeed headlines
-    print("Extracting Twitter threads from BuzzFeed headlines...")
-    print("This process will:")
-    print("  1. Extract the top 10 most shared stories from left-wing pages")
-    print("  2. Extract the top 10 most shared stories from right-wing pages")
-    print("  3. Search Twitter for these headlines")
-    print("  4. Keep the top 3 most retweeted posts for each headline")
-    print("  5. Aim for 35 topics with journalist-provided labels (15 'mostly true', 20 'mostly false')")
+    # Process based on political orientation and veracity
+    # Get the 10 most shared stories from left-wing pages
+    left_wing = extended_dataset[extended_dataset['orientation'] == 'left']
+    left_most_shared = left_wing.sort_values('hyperlink_count', ascending=False).head(10)
     
-    threaded_df = thread_tool.capture_buzzfeed_threads(extended_dataset)
+    # Get the 10 most shared stories from right-wing pages
+    right_wing = extended_dataset[extended_dataset['orientation'] == 'right']
+    right_most_shared = right_wing.sort_values('hyperlink_count', ascending=False).head(10)
+    
+    # Combine both sets
+    most_shared = pd.concat([left_most_shared, right_most_shared], ignore_index=True)
+    
+    print(f"Selected {len(most_shared)} most shared stories for Twitter search")
+    
+    # Generate Twitter threads for each headline
+    print("Generating Twitter threads for headlines...")
+    
+    if thread_capture_tool.twitter_api_available:
+        all_threads = []
+        for _, row in most_shared.iterrows():
+            # Convert article data to dict for thread capture
+            article_dict = row.to_dict()
+            
+            # Search for this headline on Twitter and capture threads
+            # Keep the top 3 most retweeted posts per headline
+            threads = thread_capture_tool._search_twitter_for_headline(article_dict.get('title', ''))
+            
+            # Sort by retweet count and take top 3
+            top_threads = sorted(threads, key=lambda x: x.get('retweet_count', 0), reverse=True)[:3]
+            
+            for thread in top_threads:
+                # Add article metadata to each thread
+                thread['article_id'] = article_dict.get('article_id', '')
+                thread['title'] = article_dict.get('title', '')
+                thread['orientation'] = article_dict.get('orientation', '')
+                thread['veracity'] = article_dict.get('veracity', '')
+                all_threads.append(thread)
+        
+        # Convert threads to DataFrame
+        threaded_df = thread_capture_tool._flatten_thread_data(all_threads)
+    else:
+        # If Twitter API is not available, generate mock threads
+        print("Twitter API not available. Generating mock threads from existing data...")
+        mock_threads = thread_capture_tool._generate_mock_twitter_threads(most_shared)
+        threaded_df = thread_capture_tool._flatten_thread_data(mock_threads)
+    
+    # Add binary labels based on veracity
+    threaded_df['label'] = threaded_df['rating'].apply(
+        lambda x: 1 if x == 'fake' else 0
+    )
     
     # Save if requested
     if save_csv:
-        threaded_df.to_csv(threaded_file, index=False)
-        print(f"Saved threaded dataset to: {threaded_file}")
+        output_path = os.path.join(output_dir, 'buzzfeed_threaded.csv')
+        threaded_df.to_csv(output_path, index=False)
+        print(f"Saved threaded dataset to: {output_path}")
     
-    # Display counts of true and false samples at the topic/thread level
-    true_count = threaded_df[threaded_df['label'] == 0].drop_duplicates('thread_id').shape[0]
-    false_count = threaded_df[threaded_df['label'] == 1].drop_duplicates('thread_id').shape[0]
-    
-    print(f"Created {len(threaded_df)} tweets across {true_count + false_count} threads from BuzzFeed dataset")
-    print(f"  - Positive samples (fake/mostly false): {false_count}")
-    print(f"  - Negative samples (real/mostly true): {true_count}")
-    
+    print(f"BuzzFeed threaded dataset created with {len(threaded_df)} threads")
     return threaded_df
 
 # Extracts features from BuzzFeed threaded dataset for better alignment with PHEME

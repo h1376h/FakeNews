@@ -40,6 +40,7 @@ class ThreadCaptureTool:
         """
         self.base_path = base_path
         self.credbank_path = os.path.join(base_path, 'credbank')
+        self.credbank_raw_path = os.path.join(base_path, 'credbank', 'CREDBANK')
         self.buzzfeed_path = os.path.join(base_path, 'buzzfeed')
         self.pheme_path = os.path.join(base_path, 'pheme')
         
@@ -147,8 +148,8 @@ class ThreadCaptureTool:
         thread_data = []
         
         # 1. Extract top shared stories from left and right-wing pages
-        left_wing_stories = buzzfeed_df[buzzfeed_df['orientation'] == 'left'].sort_values(by='share_count', ascending=False).head(10)
-        right_wing_stories = buzzfeed_df[buzzfeed_df['orientation'] == 'right'].sort_values(by='share_count', ascending=False).head(10)
+        left_wing_stories = buzzfeed_df[buzzfeed_df['orientation'] == 'left'].sort_values(by='hyperlink_count', ascending=False).head(10)
+        right_wing_stories = buzzfeed_df[buzzfeed_df['orientation'] == 'right'].sort_values(by='hyperlink_count', ascending=False).head(10)
         
         # Combine the stories
         top_stories = pd.concat([left_wing_stories, right_wing_stories])
@@ -185,7 +186,8 @@ class ThreadCaptureTool:
                             'source_tweet': root_tweet,
                             'reactions': replies,
                             'thread_id': f"{story['article_id']}_{i}",
-                            'category': 'rumours' if story.get('veracity', '').lower() in ['mostly false', 'false'] else 'non-rumours'
+                            'category': 'rumours' if story.get('rating', '').lower() == 'fake' else 'non-rumours',
+                            'rating': story.get('rating', '')  # Include the rating field
                         }
                         
                         thread_data.append(thread)
@@ -258,15 +260,28 @@ class ThreadCaptureTool:
         thread_data = []
         
         for _, story in stories.iterrows():
+            # Skip stories with missing critical data
+            if story is None:
+                continue
+                
+            # Use .get() to safely access dictionary keys with defaults
+            article_id = story.get('article_id', f"unknown_{np.random.randint(1000, 9999)}")
+            title = story.get('title', 'Untitled Article')
+            
+            if article_id is None:
+                article_id = f"unknown_{np.random.randint(1000, 9999)}"
+            if title is None:
+                title = 'Untitled Article'
+                
             # Create 1-3 threads per story
             num_threads = np.random.randint(1, 4)  # Random number between 1 and 3
             
             for i in range(num_threads):
                 # Create a mock root tweet
                 root_tweet = {
-                    'id': f"{story['article_id']}_{i}",
-                    'id_str': f"{story['article_id']}_{i}",
-                    'text': story['title'],
+                    'id': f"{article_id}_{i}",
+                    'id_str': f"{article_id}_{i}",
+                    'text': title,
                     'created_at': story.get('publish_date', ''),
                     'retweet_count': np.random.randint(50, 1000),  # Random retweet count
                     'favorite_count': np.random.randint(100, 2000),  # Random favorite count
@@ -288,10 +303,13 @@ class ThreadCaptureTool:
                 replies = []
                 
                 for j in range(num_replies):
+                    # Ensure we handle potential None in title
+                    safe_title = title[:30] if title else "Unknown title"
+                    
                     reply = {
-                        'id': f"{story['article_id']}_{i}_reply_{j}",
-                        'id_str': f"{story['article_id']}_{i}_reply_{j}",
-                        'text': f"This is a mock reply {j} to the article: {story['title'][:30]}...",
+                        'id': f"{article_id}_{i}_reply_{j}",
+                        'id_str': f"{article_id}_{i}_reply_{j}",
+                        'text': f"This is a mock reply {j} to the article: {safe_title}...",
                         'created_at': '',
                         'retweet_count': np.random.randint(0, 50),
                         'favorite_count': np.random.randint(0, 100),
@@ -311,12 +329,28 @@ class ThreadCaptureTool:
                     }
                     replies.append(reply)
                 
+                # Convert veracity to lowercase safely
+                veracity = story.get('veracity', '')
+                if veracity is None:
+                    veracity = ''
+                    
+                # Check for rating field (newer format) or use veracity (older format)
+                rating = story.get('rating', '')
+                if rating:
+                    # Use rating directly
+                    is_rumour = rating.lower() == 'fake'
+                else:
+                    # Use veracity as fallback
+                    veracity_lower = veracity.lower() if isinstance(veracity, str) else ''
+                    is_rumour = veracity_lower in ['mostly false', 'false', 'mixture of true and false', 'no factual content']
+                
                 # Create thread structure
                 thread = {
                     'source_tweet': root_tweet,
                     'reactions': replies,
-                    'thread_id': f"{story['article_id']}_{i}",
-                    'category': 'rumours' if story.get('veracity', '').lower() in ['mostly false', 'false'] else 'non-rumours'
+                    'thread_id': f"{article_id}_{i}",
+                    'category': 'rumours' if is_rumour else 'non-rumours',
+                    'rating': rating or veracity  # Store either rating or veracity for later use
                 }
                 
                 thread_data.append(thread)
@@ -354,24 +388,36 @@ class ThreadCaptureTool:
         """
         flattened_data = []
         
+        if thread_data is None:
+            return pd.DataFrame()
+            
         for thread in thread_data:
-            # Extract source tweet data
-            source_tweet = thread['source_tweet']
+            if thread is None:
+                continue
+                
+            # Extract source tweet data with safe access
+            source_tweet = thread.get('source_tweet', {})
+            if source_tweet is None:
+                source_tweet = {}
             
             # Create base row with thread info
             row = {
-                'thread_id': thread['thread_id'],
-                'category': thread['category'],
-                'num_reactions': len(thread['reactions'])
+                'thread_id': thread.get('thread_id', f"unknown_{np.random.randint(1000, 9999)}"),
+                'category': thread.get('category', 'unknown'),
+                'num_reactions': len(thread.get('reactions', []))
             }
             
             # Process source tweet fields
             for key, value in source_tweet.items():
+                if value is None:
+                    continue
+                    
                 if isinstance(value, dict):
                     # Handle nested dictionaries (like user data)
                     for sub_key, sub_value in value.items():
-                        field_key = f'source_tweet_user_{sub_key}'
-                        row[field_key] = sub_value
+                        if sub_value is not None:  # Skip None values
+                            field_key = f'source_tweet_user_{sub_key}'
+                            row[field_key] = sub_value
                 else:
                     field_key = f'source_tweet_{key}'
                     row[field_key] = value
@@ -383,16 +429,24 @@ class ThreadCaptureTool:
             reaction_in_reply_to_status_id = []
             reaction_user_ids = []
             
-            # Process reactions
-            for reaction in thread['reactions']:
+            # Process reactions with safe access
+            reactions = thread.get('reactions', [])
+            if reactions is None:
+                reactions = []
+                
+            for reaction in reactions:
+                if reaction is None:
+                    continue
+                    
                 reaction_texts.append(reaction.get('text', ''))
                 reaction_created_at.append(reaction.get('created_at', ''))
                 reaction_id.append(reaction.get('id_str', ''))
                 reaction_in_reply_to_status_id.append(reaction.get('in_reply_to_status_id_str', ''))
                 
                 # Add user ID if available
-                if 'user' in reaction and 'id_str' in reaction['user']:
-                    reaction_user_ids.append(reaction['user']['id_str'])
+                user = reaction.get('user', {})
+                if user is not None and isinstance(user, dict) and 'id_str' in user:
+                    reaction_user_ids.append(user['id_str'])
                 else:
                     reaction_user_ids.append('')
             
@@ -404,7 +458,12 @@ class ThreadCaptureTool:
             row['reaction_user_ids'] = reaction_user_ids
             
             # Add label (binary: 1 for rumours, 0 for non-rumours)
-            row['label'] = 1 if thread['category'] == 'rumours' else 0
+            category = thread.get('category', '')
+            row['label'] = 1 if category == 'rumours' else 0
+            
+            # Preserve rating field if it exists
+            if 'rating' in thread:
+                row['rating'] = thread['rating']
             
             flattened_data.append(row)
         

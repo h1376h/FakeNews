@@ -279,16 +279,14 @@ class BaseContentFeatureExtractor(FeatureExtractor):
         return str(text).count('!')
     
     def _count_pronouns(self, text: str) -> Dict[str, int]:
-        """Count occurrences of different pronoun types in text using regex patterns.
+        """Count pronouns in text by type.
         
-        Args:
-            text: Text to analyze
-            
         Returns:
-            Dictionary with counts for first, second, and third person pronouns
+            Dictionary with counts for first_person, second_person, and third_person pronouns
         """
-        # Use regex patterns rather than relying on NLTK's POS tagging which might fail
-        # if NLTK data isn't properly downloaded
+        # Ensure text is not None
+        text = str(text) if text is not None else ""
+        
         pronouns = {
             'first_person': 0,
             'second_person': 0,
@@ -314,67 +312,93 @@ class BaseContentFeatureExtractor(FeatureExtractor):
             pronouns['first_person'] = sum(word in first_person for word in words)
             pronouns['second_person'] = sum(word in second_person for word in words)
             pronouns['third_person'] = sum(word in third_person for word in words)
-            
+        
         return pronouns
     
     def _count_smileys(self, text: str) -> int:
-        """Count smiling emoticons and emojis in text."""
-        text = str(text)
-        # Traditional smileys
-        traditional_count = sum(
-            len(re.findall(pattern, text))
-            for pattern in self.patterns['smiley_patterns']
-        )
+        """Count smileys/emoticons in text using regex patterns.
         
-        # Emoji smileys
-        emoji_count = len([c for c in text if c in emoji.EMOJI_DATA and 'smile' in emoji.EMOJI_DATA[c]['en'].lower()])
+        Returns:
+            Integer count of smileys found
+        """
+        # Ensure text is not None
+        text = str(text) if text is not None else ""
         
-        return traditional_count + emoji_count
+        try:
+            # Try to use the smiley pattern to find matches
+            return len(re.findall(self.patterns['smiley_pattern'], text))
+        except Exception:
+            # Fallback smiley detection
+            return sum(1 for char in text if char in ':) :( ;) :D :P :p ^^'.split())
     
     def _check_negation(self, text: str, window_size: int = 5) -> bool:
-        """Check if text contains negation patterns within a window of words.
+        """Check for negation words in text within a window size of key terms.
         
         Args:
-            text: Text to check for negation
-            window_size: Number of words to look ahead after a negation word
+            text: Text to analyze
+            window_size: Number of words to look for negation terms
             
         Returns:
-            bool: True if negation is found, False otherwise
+            Boolean indicating whether negation is detected
         """
-        text = str(text).lower()
-        words = text.split()
+        # Ensure text is not None
+        text = str(text) if text is not None else ""
         
+        # Tokenize text into words for window analysis
+        words = text.lower().split()
+        
+        # Find negation words
         for i, word in enumerate(words):
             # Check if current word contains any negation pattern
             if any(re.search(pattern, word) for pattern in self.patterns['negation_patterns']):
-                # Look ahead up to window_size words for support words
-                end_idx = min(i + window_size + 1, len(words))
-                window = ' '.join(words[i:end_idx])
+                # Look for support words in a window around the negation
+                window_start = max(0, i - window_size)
+                window_end = min(len(words), i + window_size + 1)
+                window = words[window_start:window_end]
+                
+                # Check if any support word is in the window
                 if any(support_word in window for support_word in self.patterns['support_words']):
                     return True
+        
         return False
 
     def _check_disagreement(self, text: str) -> bool:
-        """Check if text contains disagreement indicators or negated support indicators."""
-        text = str(text).lower()
-        # Check for direct disagreement words
-        has_disagreement = any(word in text for word in self.patterns['disagreement_words'])
-        # Check for negated support words
-        has_negated_support = self._check_negation(text)
-        return has_disagreement or has_negated_support
-    
+        """Check if text expresses disagreement or denial.
+        
+        Returns:
+            Boolean indicating disagreement
+        """
+        # Ensure text is not None
+        text = str(text) if text is not None else ""
+        
+        # Simple pattern matching for disagreement words
+        text_lower = text.lower()
+        return any(word in text_lower for word in self.patterns['disagreement_words'])
+
     def _check_support(self, text: str) -> bool:
-        """Check if text contains support indicators that are not negated."""
-        text = str(text).lower()
-        # First check if there's any support word
-        has_support = any(word in text for word in self.patterns['support_words'])
-        # If there is, make sure it's not negated
-        return has_support and not self._check_negation(text)
-    
+        """Check if text expresses support or agreement.
+        
+        Returns:
+            Boolean indicating support
+        """
+        # Ensure text is not None
+        text = str(text) if text is not None else ""
+        
+        # Simple pattern matching for support words
+        text_lower = text.lower()
+        return any(word in text_lower for word in self.patterns['support_words'])
+
     def _check_info_request(self, text: str) -> bool:
-        """Check if text contains information request indicators."""
-        text = str(text).lower()
-        return any(re.search(pattern, text) for pattern in self.patterns['info_request_patterns'])
+        """Check if text contains an information request.
+        
+        Returns:
+            Boolean indicating an information request
+        """
+        # Ensure text is not None
+        text = str(text) if text is not None else ""
+        
+        # Check for question marks or question phrases
+        return '?' in text or any(pattern in text.lower() for pattern in self.patterns['info_request_patterns'])
     
     def _process_tweets(self, tweets: List[str]) -> Dict[str, float]:
         """Process a list of tweets and extract all content features.
