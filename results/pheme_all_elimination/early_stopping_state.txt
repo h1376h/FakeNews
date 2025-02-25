@@ -1,0 +1,5 @@
+Early stopping triggered at 1 features
+ROC-AUC at stopping: 0.6634 ± 0.0140
+
+Remaining features at early stopping:
+user_source_account_age_days
