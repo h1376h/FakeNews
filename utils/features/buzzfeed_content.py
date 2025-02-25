@@ -31,7 +31,7 @@ class BuzzFeedContentFeatureExtractor(BaseContentFeatureExtractor):
         # Process each article and its reactions
         for idx, row in df.iterrows():
             # Get all tweets in the thread
-            all_tweets = [row['mainText']] + (row.get('reaction_texts', []) or [])
+            all_tweets = [row.get('source_tweet_text', '')] + (row.get('reaction_texts', []) or [])
             
             # Process tweets and store features
             features = self._process_tweets(all_tweets)
