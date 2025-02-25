@@ -64,7 +64,20 @@ def load_and_combine_threaded_datasets(pheme_path: str = 'data/pheme',
                                      output_dir: str = 'data/train',
                                      save_csv: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load and combine PHEME, threaded CREDBANK, and threaded BuzzFeed feature datasets.
+    
     This uses the thread-captured versions of CREDBANK and BuzzFeed datasets.
+    
+    For BuzzFeed, the Facebook data is aligned with Twitter through the following process:
+    1. Extracting the 10 most shared stories from left-wing pages
+    2. Extracting the 10 most shared stories from right-wing pages  
+    3. Searching Twitter for these headlines
+    4. Keeping the top 3 most retweeted posts for each headline
+    5. This results in 35 topics with journalist-provided labels (15 "mostly true", 20 "mostly false")
+    
+    For CREDBANK, thread structure is created by:
+    1. Identifying the most retweeted tweet in each event as the thread root
+    2. Collecting replies to this root tweet as children
+    3. Discarding threads with no reactions
     
     Args:
         pheme_path: Path to PHEME dataset directory
