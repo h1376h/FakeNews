@@ -350,17 +350,16 @@ def capture_threaded_structure(
                     return pd.DataFrame()
                 # Basic thread structure with just the source tweet
                 thread_data = []
-                for idx, row in buzzfeed_df.iterrows():
+                for _, row in buzzfeed_df.iterrows():
                     if 'title' in row:
                         thread_data.append({
-                            'id': row.get('article_id', f"article_{idx}"),
+                            'id': row.get('article_id', f"article_{_}"),
                             'thread_root': row.get('title', ''),
                             'thread_depth': 0,
                             'thread_size': 1,
-                            'label': row.get('label', 0),
-                            'source': 'buzzfeed'  # Add source field to ensure proper alignment
+                            'label': row.get('label', 0)
                         })
-                return pd.DataFrame(thread_data) if thread_data else pd.DataFrame({'source': ['buzzfeed'], 'label': [0]})
+                return pd.DataFrame(thread_data) if thread_data else pd.DataFrame()
                 
             def save_threaded_datasets(self, credbank_threads=None, buzzfeed_threads=None, output_dir=None):
                 return None, None
