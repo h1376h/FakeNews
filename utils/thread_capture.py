@@ -189,20 +189,22 @@ class ThreadCaptureTool:
         Returns:
             List of tweet dictionaries
         """
+        # Ensure headline is not None and cast it to string
+        headline = str(headline) if headline is not None else ""
         try:
             # Create mock Twitter search results since we don't have API access
             # This simulates finding 3 tweets for each headline
             mock_tweets = []
             for i in range(3):
-                tweet_id = f"{abs(hash(headline + str(i))) % 10000000000}"
+                tweet_id = f"{abs(hash(str(headline) + str(i))) % 10000000000}"
                 mock_tweets.append({
                     'id': tweet_id,
                     'id_str': str(tweet_id),
-                    'text': headline[:140],  # Simulate tweet text limit
+                    'text': str(headline)[:140],  # Simulate tweet text limit
                     'user': {
-                        'screen_name': f"user_{i}_{abs(hash(headline)) % 1000}",
+                        'screen_name': f"user_{i}_{abs(hash(str(headline))) % 1000}",
                         'name': f"User {i}",
-                        'id': abs(hash(f"user_{i}_{headline}")) % 1000000
+                        'id': abs(hash(f"user_{i}_{str(headline)}")) % 1000000
                     },
                     'retweet_count': 100 - (i * 30),  # First has most retweets
                     'favorite_count': 50 - (i * 15),

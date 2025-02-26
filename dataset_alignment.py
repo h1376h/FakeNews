@@ -440,6 +440,23 @@ def main(
     
     logger.info("Starting dataset alignment process...")
     
+    # Configure SSL context to bypass certificate verification for nltk downloads
+    try:
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
+    except Exception as e:
+        logger.warning("Could not modify SSL context: " + str(e))
+
+    # In function main(...), after logger.info("Starting dataset alignment process...") add NLTK download
+    try:
+        import nltk
+        try:
+            nltk.data.find('taggers/averaged_perceptron_tagger')
+        except LookupError:
+            nltk.download('averaged_perceptron_tagger')
+    except Exception as e:
+        logger.warning(f"NLTK resource download failed: {str(e)}")
+
     # Initialize all DataFrame variables
     buzzfeed_df = pd.DataFrame()
     credbank_df = pd.DataFrame()
@@ -544,6 +561,24 @@ def main(
             logger.error(f"Error generating BuzzFeed features: {str(e)}")
             buzzfeed_features = pd.DataFrame()
     
+    # Ensure required columns exist for alignment in all datasets
+    def ensure_columns(df):
+        if df is not None and not df.empty:
+            if 'source' not in df.columns:
+                if 'text' in df.columns:
+                    df['source'] = df['text']
+                elif 'title' in df.columns:
+                    df['source'] = df['title']
+                else:
+                    df['source'] = 'unknown'
+            if 'label' not in df.columns:
+                df['label'] = -1
+        return df
+
+    pheme_threads_df = ensure_columns(pheme_threads_df) if pheme_threads_df is not None else None
+    buzzfeed_features = ensure_columns(buzzfeed_features) if buzzfeed_features is not None else None
+    credbank_features = ensure_columns(credbank_features) if credbank_features is not None else None
+
     # Align features across all datasets
     aligned_datasets = {}
     
