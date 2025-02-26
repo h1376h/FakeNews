@@ -204,6 +204,9 @@ def save_feature_sets(df: pd.DataFrame, output_dir: str, dataset_name: str) -> T
         col.startswith(prefix) for prefix in 
         ['structural_', 'user_', 'content_', 'temporal_']
     )]
+    if not feature_columns:
+        # Fallback: use all columns except 'source' and 'label'
+        feature_columns = [col for col in df.columns if col not in ['source', 'label']]
     
     # Define additional features to exclude from paper features
     additional_features = {
