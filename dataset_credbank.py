@@ -16,14 +16,85 @@ from utils.features import (
     CredbankTemporalFeatureExtractor
 )
 from utils.dataset_alignment import save_feature_sets
+from datetime import datetime
+import logging
+import re
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # CREDBANK dataset processor for credibility assessment using social media features
 def process_list_column(column_data):
     """Process a string representation of a list into an actual list."""
+    # If already a list or numpy array, return it
+    if isinstance(column_data, (list, np.ndarray)):
+        return column_data
+        
+    # If None or NaN, return empty list
+    if column_data is None or pd.isna(column_data):
+        return []
+        
+    # If it's a string, try to evaluate it as a list
+    if isinstance(column_data, str):
+        try:
+            result = eval(column_data)
+            if isinstance(result, (list, np.ndarray)):
+                return result
+            else:
+                return [result]  # Convert single items to a list
+        except:
+            # If eval fails, try to split by comma (simple CSV format)
+            try:
+                if ',' in column_data:
+                    return [item.strip() for item in column_data.split(',')]
+                else:
+                    return [column_data]  # Single item
+            except:
+                return []
+    
+    # For any other type, try to convert to list or return empty list
     try:
-        return eval(column_data)
+        return list(column_data)
     except:
         return []
+
+# Parse Twitter date format to datetime object
+def parse_twitter_date(date_str):
+    """Parse Twitter's date format to datetime object."""
+    if date_str is None or pd.isna(date_str):
+        return None
+        
+    # If already a datetime object, return it
+    if isinstance(date_str, datetime):
+        return date_str
+        
+    date_str = str(date_str).strip()
+    formats = [
+        '%a %b %d %H:%M:%S +0000 %Y',  # Twitter API format
+        '%Y-%m-%d %H:%M:%S',           # Standard format
+        '%Y-%m-%dT%H:%M:%S.%fZ',       # ISO format
+        '%Y-%m-%dT%H:%M:%SZ',          # ISO format without milliseconds
+        '%Y-%m-%d',                    # Date only format
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except (ValueError, TypeError):
+            continue
+    
+    # Try to handle other potential formats
+    try:
+        # Try pandas to_datetime as a fallback with error handling
+        dt = pd.to_datetime(date_str, errors='coerce')
+        if pd.notna(dt):
+            return dt.to_pydatetime()
+    except:
+        pass
+        
+    # Log the failure for debugging
+    logging.debug(f"Failed to parse date string: {date_str}")
+    return None
 
 # Loads raw CREDBANK dataset from multiple data files containing credibility ratings and tweets
 def load_credbank_dataset_raw(base_path: str = 'data/credbank/CREDBANK', output_dir: str = None, save_csv: bool = False) -> pd.DataFrame:
@@ -80,50 +151,162 @@ def load_credbank_dataset_raw(base_path: str = 'data/credbank/CREDBANK', output_
                     if len(parts) >= 4:  # Ensure we have all required columns
                         topic_key = parts[0]
                         tweet_list_str = parts[3]  # The tweet list is in the fourth column
-                        tweet_list = process_list_column(tweet_list_str)
-                        unique_authors = set(tuple_item[1].split('AUTHOR=')[1] for tuple_item in tweet_list)
                         
-                        # Extract additional metrics
+                        # Try to parse the tweet list as JSON first
+                        try:
+                            tweet_list = json.loads(tweet_list_str)
+                        except json.JSONDecodeError:
+                            # If JSON parsing fails, try eval with safety checks
+                            try:
+                                tweet_list = eval(tweet_list_str)
+                            except:
+                                # If both methods fail, use the process_list_column function
+                                tweet_list = process_list_column(tweet_list_str)
+                        
+                        # Extract temporal and structural data
+                        timestamps = []
+                        followers = []
+                        friends = []
+                        statuses = []
+                        account_created_ats = []
+                        texts = []
+                        user_ids = []
+                        tweet_ids = []
+                        in_reply_to_status_ids = []
+                        
+                        for tweet_data in tweet_list:
+                            try:
+                                # Handle different tweet data formats
+                                if isinstance(tweet_data, dict):
+                                    # Direct dictionary format
+                                    tweet_obj = tweet_data
+                                elif isinstance(tweet_data, (list, tuple)) and len(tweet_data) >= 4:
+                                    # Tuple format with tweet data in position 3
+                                    tweet_obj = tweet_data[3] if isinstance(tweet_data[3], dict) else {}
+                                else:
+                                    # Skip invalid formats
+                                    continue
+                                
+                                # Extract created_at time
+                                if 'created_at' in tweet_obj:
+                                    created_at = parse_twitter_date(tweet_obj['created_at'])
+                                    if created_at:
+                                        timestamps.append(created_at.strftime('%Y-%m-%d %H:%M:%S'))
+                                
+                                # Extract user metrics
+                                user_data = tweet_obj.get('user', {})
+                                
+                                # Extract follower count
+                                follower_count = user_data.get('followers_count')
+                                if follower_count is not None and str(follower_count).isdigit():
+                                    followers.append(int(follower_count))
+                                
+                                # Extract friends count
+                                friend_count = user_data.get('friends_count')
+                                if friend_count is not None and str(friend_count).isdigit():
+                                    friends.append(int(friend_count))
+                                
+                                # Extract statuses count
+                                status_count = user_data.get('statuses_count')
+                                if status_count is not None and str(status_count).isdigit():
+                                    statuses.append(int(status_count))
+                                
+                                # Extract account creation date
+                                if 'created_at' in user_data:
+                                    account_created = parse_twitter_date(user_data['created_at'])
+                                    if account_created:
+                                        account_created_ats.append(account_created.strftime('%Y-%m-%d %H:%M:%S'))
+                                
+                                # Extract text
+                                tweet_text = tweet_obj.get('text', '')
+                                if tweet_text:
+                                    texts.append(tweet_text)
+                                
+                                # Extract user ID
+                                user_id = str(user_data.get('id_str', ''))
+                                if not user_id:
+                                    user_id = str(user_data.get('id', ''))
+                                if user_id:
+                                    user_ids.append(user_id)
+                                
+                                # Extract tweet ID
+                                tweet_id = str(tweet_obj.get('id_str', ''))
+                                if not tweet_id:
+                                    tweet_id = str(tweet_obj.get('id', ''))
+                                if tweet_id:
+                                    tweet_ids.append(tweet_id)
+                                
+                                # Extract in_reply_to_status_id
+                                reply_id = str(tweet_obj.get('in_reply_to_status_id_str', ''))
+                                if not reply_id:
+                                    reply_id = str(tweet_obj.get('in_reply_to_status_id', ''))
+                                if reply_id and reply_id != '0' and reply_id.lower() != 'none':
+                                    in_reply_to_status_ids.append(reply_id)
+                                
+                            except Exception as e:
+                                logging.error(f"Error processing tweet: {str(e)}")
+                                continue
+                        
+                        # Store the extracted data
                         tweet_metrics.append({
                             'topic_key': topic_key,
-                            'tweet_count': int(len(tweet_list)),
-                            'unique_authors': int(len(unique_authors))
+                            'created_at_times': timestamps if timestamps else None,
+                            'followers_counts': followers if followers else None,
+                            'friends_counts': friends if friends else None,
+                            'statuses_counts': statuses if statuses else None,
+                            'account_created_ats': account_created_ats if account_created_ats else None,
+                            'texts': texts if texts else None,
+                            'user_ids': user_ids if user_ids else None,
+                            'tweet_ids': tweet_ids if tweet_ids else None,
+                            'in_reply_to_status_ids': in_reply_to_status_ids if in_reply_to_status_ids else None,
+                            'tweet_count': len(timestamps)
                         })
                 except Exception as e:
-                    print(f"\nError processing line: {str(e)}")
+                    logging.error(f"Error processing line: {str(e)}")
                 finally:
                     pbar.update(1)
     
-    search_tweets_df = pd.DataFrame(tweet_metrics)
+    if not tweet_metrics:
+        warnings.warn("No valid tweet data found")
+        tweet_metrics_df = pd.DataFrame(columns=[
+            'topic_key', 'created_at_times', 'followers_counts', 'friends_counts', 
+            'statuses_counts', 'tweet_count'
+        ])
+    else:
+        tweet_metrics_df = pd.DataFrame(tweet_metrics)
     
-    # Merge all DataFrames
-    merged_df = pd.merge(
-        cred_ratings_df,
-        event_annotations_df,
-        left_on='topic_key',
-        right_on='timespan_key',
-        how='left',
-        suffixes=('', '_event')  # Keep original column names, add _event suffix for duplicates
-    )
+    # Merge datasets
+    merged_df = cred_ratings_df.copy()
     
-    # Drop duplicate topic_terms column
-    if 'topic_terms_event' in merged_df.columns:
-        merged_df.drop('topic_terms_event', axis=1, inplace=True)
+    # Add tweet metrics
+    if not tweet_metrics_df.empty:
+        merged_df = pd.merge(
+            merged_df, 
+            tweet_metrics_df,
+            on='topic_key',
+            how='left'
+        )
+    else:
+        # Add empty columns if no tweet data
+        for col in ['created_at_times', 'followers_counts', 'friends_counts', 
+                   'statuses_counts', 'account_created_ats', 'texts', 'user_ids',
+                   'tweet_ids', 'in_reply_to_status_ids', 'tweet_count']:
+            merged_df[col] = None
     
-    # Merge with tweets data
+    # Add event annotations
     merged_df = pd.merge(
         merged_df,
-        search_tweets_df,
-        on='topic_key',
+        event_annotations_df,
+        on='topic_terms',
         how='left'
     )
     
-    # Save if requested
+    # Save raw dataset if requested
     if save_csv:
         os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, 'credbank_raw_dataset.csv')
-        merged_df.to_csv(output_path, index=False, header=True)
-        print(f"Saved raw dataset to: {output_path}")
+        output_path = os.path.join(output_dir, 'credbank_raw.csv')
+        merged_df.to_csv(output_path, index=False)
+        print(f"Raw dataset saved to: {output_path}")
     
     return merged_df
 
@@ -147,7 +330,88 @@ def load_credbank_dataset_extended(raw_dataset: Union[Dict, str, None] = None, b
     if isinstance(raw_dataset, str) and os.path.exists(raw_dataset):
         # Load from specified CSV path
         print(f"Loading extended dataset from CSV: {raw_dataset}")
-        return pd.read_csv(raw_dataset)
+        df = pd.read_csv(raw_dataset)
+        
+        def safe_eval(x):
+            if pd.isna(x):
+                return []
+            if not isinstance(x, str):
+                if isinstance(x, (list, np.ndarray)):
+                    return x
+                return []
+            try:
+                val = eval(x)
+                return val if isinstance(val, (list, np.ndarray)) else [val]
+            except:
+                # Try to split by comma if it looks like a CSV
+                try:
+                    if ',' in x:
+                        return [item.strip() for item in x.split(',')]
+                    else:
+                        return [x]  # Single item
+                except:
+                    return []
+        
+        # Convert string representations of lists back to actual lists
+        list_columns = ['topic_terms', 'Cred_Ratings', 'Reasons', 'created_at_times', 
+                       'followers_counts', 'friends_counts', 'statuses_counts']
+        for col in list_columns:
+            if col in df.columns:
+                df[col] = df[col].apply(safe_eval)
+        
+        # Extract timestamps from topic_key if created_at_times is empty
+        if 'created_at_times' not in df.columns or df['created_at_times'].isna().all():
+            timestamp_pattern = re.compile(r'(\d{8}_\d{6})')
+            
+            # Extract timestamps from topic_key
+            def extract_timestamps(topic_key):
+                if pd.isna(topic_key):
+                    return []
+                
+                # Try to find timestamps in the topic_key
+                matches = timestamp_pattern.findall(str(topic_key))
+                
+                # Convert to datetime format
+                timestamps = []
+                for match in matches:
+                    try:
+                        # Format: YYYYMMDD_HHMMSS
+                        year = match[:4]
+                        month = match[4:6]
+                        day = match[6:8]
+                        hour = match[9:11]
+                        minute = match[11:13]
+                        second = match[13:15]
+                        timestamp = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                        timestamps.append(timestamp)
+                    except Exception as e:
+                        logging.warning(f"Error parsing timestamp {match}: {str(e)}")
+                        continue
+                
+                # If no timestamps found, try to extract from timespan_key format
+                if not timestamps and '-' in str(topic_key):
+                    try:
+                        # Try to extract from format like "term1_term2_term3-20141024_170629-20141024_181626"
+                        parts = str(topic_key).split('-')
+                        for part in parts:
+                            if re.match(r'\d{8}_\d{6}', part):
+                                year = part[:4]
+                                month = part[4:6]
+                                day = part[6:8]
+                                hour = part[9:11]
+                                minute = part[11:13]
+                                second = part[13:15]
+                                timestamp = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                                timestamps.append(timestamp)
+                    except Exception as e:
+                        logging.warning(f"Error parsing timespan from topic_key {topic_key}: {str(e)}")
+                
+                return timestamps
+            
+            df['created_at_times'] = df['topic_key'].apply(extract_timestamps)
+            print(f"Extracted timestamps from topic_key: {df['created_at_times'].str.len().sum()} timestamps found")
+        
+        return df
     
     if raw_dataset is None:
         raw_dataset = load_credbank_dataset_raw(base_path)
@@ -157,45 +421,20 @@ def load_credbank_dataset_extended(raw_dataset: Union[Dict, str, None] = None, b
     for col in list_columns:
         raw_dataset[col] = raw_dataset[col].apply(process_list_column)
     
-    # Create a more robust mapping function that handles different formats
-    def normalize_topic_terms(terms):
-        """Normalize topic terms for consistent matching"""
-        if isinstance(terms, str):
-            # Handle string format from event annotations
-            terms = terms.lower().replace('[', '').replace(']', '').replace("'", '').replace('"', '')
-            return sorted(term.strip() for term in terms.split(','))
-        elif isinstance(terms, list):
-            # Handle list format from credibility ratings
-            return sorted(str(term).lower().strip() for term in terms)
-        return []
-
-    # Create mapping with normalized terms
-    topic_event_map = defaultdict(list)
-    for _, row in raw_dataset.iterrows():
-        normalized_terms = tuple(normalize_topic_terms(row['topic_terms']))
-        if normalized_terms and pd.notna(row.get('isEvent')):  # Only add if we have valid terms and isEvent
-            topic_event_map[normalized_terms].append({
-                'time_key': row['timespan_key'],
-                'isEvent': int(row['isEvent']) if pd.notna(row['isEvent']) else 0  # Default to 0 if NaN
-            })
-
-    # Modified matching function
-    def get_event_info(topic_terms):
-        normalized_terms = tuple(normalize_topic_terms(topic_terms))
-        # Try exact match first
-        if normalized_terms in topic_event_map:
-            return topic_event_map[normalized_terms]
-        
-        # If no exact match, try partial matching
-        normalized_terms_set = set(normalized_terms)
-        for stored_terms, values in topic_event_map.items():
-            stored_terms_set = set(stored_terms)
-            if len(normalized_terms_set & stored_terms_set) >= 2:  # At least 2 terms match
-                return values
-        return []
-
-    # Apply the matching to get event info
-    raw_dataset['event_info'] = raw_dataset['topic_terms'].apply(get_event_info)
+    # Extract event info from topic_terms and timespan_key
+    raw_dataset['event_info'] = raw_dataset.apply(
+        lambda row: [
+            {
+                'time_key': time_key,
+                'isEvent': is_event
+            }
+            for time_key, is_event in zip(
+                [row['timespan_key']] if not pd.isna(row['timespan_key']) else [],
+                [row['isEvent']] if not pd.isna(row['isEvent']) else []
+            )
+        ],
+        axis=1
+    )
     
     # Extract time_keys and isEvent from event_info
     raw_dataset['time_keys'] = raw_dataset['event_info'].apply(
@@ -235,6 +474,100 @@ def load_credbank_dataset_extended(raw_dataset: Union[Dict, str, None] = None, b
         return mode_count / total
     
     raw_dataset['rater_agreement'] = raw_dataset['Cred_Ratings'].apply(calculate_agreement)
+    
+    # Extract timestamps from topic_key
+    timestamp_pattern = re.compile(r'(\d{8}_\d{6})')
+    
+    # Extract timestamps from topic_key
+    def extract_timestamps(topic_key):
+        if pd.isna(topic_key):
+            return []
+        
+        # Try to find timestamps in the topic_key
+        matches = timestamp_pattern.findall(str(topic_key))
+        
+        # Convert to datetime format
+        timestamps = []
+        for match in matches:
+            try:
+                # Format: YYYYMMDD_HHMMSS
+                year = match[:4]
+                month = match[4:6]
+                day = match[6:8]
+                hour = match[9:11]
+                minute = match[11:13]
+                second = match[13:15]
+                timestamp = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                timestamps.append(timestamp)
+            except Exception as e:
+                logging.warning(f"Error parsing timestamp {match}: {str(e)}")
+                continue
+        
+        # If no timestamps found, try to extract from timespan_key format
+        if not timestamps and '-' in str(topic_key):
+            try:
+                # Try to extract from format like "term1_term2_term3-20141024_170629-20141024_181626"
+                parts = str(topic_key).split('-')
+                for part in parts:
+                    if re.match(r'\d{8}_\d{6}', part):
+                        year = part[:4]
+                        month = part[4:6]
+                        day = part[6:8]
+                        hour = part[9:11]
+                        minute = part[11:13]
+                        second = part[13:15]
+                        timestamp = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                        timestamps.append(timestamp)
+            except Exception as e:
+                logging.warning(f"Error parsing timespan from topic_key {topic_key}: {str(e)}")
+        
+        return timestamps
+    
+    # Apply the function to extract timestamps
+    raw_dataset['created_at_times'] = raw_dataset['topic_key'].apply(extract_timestamps)
+    
+    # Log the results
+    timestamp_count = sum(len(times) for times in raw_dataset['created_at_times'])
+    print(f"Extracted timestamps from topic_key: {timestamp_count} timestamps found in {len(raw_dataset)} rows")
+    
+    # If we have timespan_key column, also extract timestamps from there as a backup
+    if 'timespan_key' in raw_dataset.columns:
+        def extract_from_timespan(timespan_key, existing_times):
+            # Skip if we already have timestamps
+            if existing_times and len(existing_times) > 0:
+                return existing_times
+                
+            if pd.isna(timespan_key):
+                return existing_times
+                
+            # Try to extract timestamps from timespan_key
+            matches = timestamp_pattern.findall(str(timespan_key))
+            timestamps = []
+            
+            for match in matches:
+                try:
+                    year = match[:4]
+                    month = match[4:6]
+                    day = match[6:8]
+                    hour = match[9:11]
+                    minute = match[11:13]
+                    second = match[13:15]
+                    timestamp = f"{year}-{month}-{day} {hour}:{minute}:{second}"
+                    timestamps.append(timestamp)
+                except:
+                    continue
+                    
+            return timestamps if timestamps else existing_times
+        
+        # Only use timespan_key if created_at_times is empty
+        raw_dataset['created_at_times'] = raw_dataset.apply(
+            lambda row: extract_from_timespan(row.get('timespan_key'), row['created_at_times']), 
+            axis=1
+        )
+        
+        # Log the updated results
+        timestamp_count = sum(len(times) for times in raw_dataset['created_at_times'])
+        print(f"After adding timespan_key timestamps: {timestamp_count} timestamps found in {len(raw_dataset)} rows")
     
     # Save if requested
     if save_csv:
@@ -318,14 +651,35 @@ def extract_all_features(df: pd.DataFrame, include_additional_features: bool = F
     ]
     
     # Apply each extractor and update the DataFrame
-    for extractor in extractors:
-        # Get features from the current extractor
-        updated_df = extractor.extract_features()
-        
-        # Add any new columns from the updated DataFrame
-        new_columns = set(updated_df.columns) - set(result_df.columns)
-        for col in new_columns:
-            result_df[col] = updated_df[col]
+    for i, extractor in enumerate(extractors):
+        logging.info(f"Applying extractor {i+1}/{len(extractors)}: {extractor.__class__.__name__}")
+        try:
+            # Get features from the current extractor
+            updated_df = extractor.extract_features()
+            
+            # Add any new columns from the updated DataFrame
+            new_columns = set(updated_df.columns) - set(result_df.columns)
+            for col in new_columns:
+                result_df[col] = updated_df[col]
+                
+            # Log the number of features extracted
+            feature_cols = [col for col in updated_df.columns if col not in df.columns]
+            logging.info(f"Extracted {len(feature_cols)} features from {extractor.__class__.__name__}")
+            
+        except Exception as e:
+            logging.error(f"Error in {extractor.__class__.__name__}: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
+    
+    # Check if we have any temporal features
+    temporal_features = [col for col in result_df.columns if col.startswith('temporal_')]
+    if not temporal_features:
+        logging.warning("No temporal features were extracted. This may indicate an issue with the dataset.")
+    
+    # Check if we have any structural features
+    structural_features = [col for col in result_df.columns if col.startswith('structural_')]
+    if not structural_features:
+        logging.warning("No structural features were extracted. This may indicate an issue with the dataset.")
     
     return result_df
 

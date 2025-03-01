@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Union, Optional, Set
 from abc import ABC, abstractmethod
+import logging
 
 class FeatureExtractor(ABC):
     """Abstract base class for feature extraction with enhanced error handling and validation."""
@@ -127,19 +128,44 @@ class FeatureExtractor(ABC):
         raise NotImplementedError("Subclasses must implement extract_features method")
 
     def validate_features(self, df: pd.DataFrame) -> None:
-        """Validate that all required features were extracted.
+        """Validate that all required features were extracted and have valid values.
         
         Args:
             df: DataFrame to validate
             
         Raises:
-            ValueError: If any feature columns are missing or contain all NaN values
+            ValueError: If any feature columns are missing, contain all NaN values,
+                      or have invalid data types
         """
+        if df.empty:
+            raise ValueError("DataFrame is empty")
+            
+        # Check for missing feature columns
         missing_features = self.feature_columns - set(df.columns)
         if missing_features:
             raise ValueError(f"Missing feature columns: {missing_features}")
             
+        # Check for columns with all NaN values
         nan_features = [col for col in self.feature_columns 
                        if df[col].isna().all()]
         if nan_features:
             raise ValueError(f"Features contain all NaN values: {nan_features}")
+            
+        # Check for invalid data types and values
+        for col in self.feature_columns:
+            # All features should be numeric
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                raise ValueError(f"Feature {col} has non-numeric data type: {df[col].dtype}")
+                
+            # Check for infinite values
+            if df[col].isin([float('inf'), float('-inf')]).any():
+                raise ValueError(f"Feature {col} contains infinite values")
+                
+            # Check for unreasonable values in ratio features
+            if 'ratio' in col.lower() and ((df[col] < 0).any() or (df[col] > 1).any()):
+                raise ValueError(f"Ratio feature {col} contains values outside [0,1] range")
+                
+            # Log warning for features with high percentage of missing values
+            missing_pct = df[col].isna().mean() * 100
+            if missing_pct > 10:
+                logging.warning(f"Feature {col} has {missing_pct:.1f}% missing values")

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional, Set
 from collections import defaultdict
 import re
+import logging
 
 class BaseStructuralFeatureExtractor(FeatureExtractor):
     """Base class for structural feature extractors with enhanced validation and computation.
@@ -262,61 +263,96 @@ class BaseStructuralFeatureExtractor(FeatureExtractor):
         
         return max_depth
     
-    def _process_structural_features(self, texts: List[str], timestamps: List[datetime] = None,
-                                   tweet_ids: List[str] = None, reply_to_ids: List[str] = None) -> Dict[str, float]:
-        """Process a list of tweets and extract all structural features.
+    def _process_structural_features(self, 
+                                 timestamps: List[datetime] = None,
+                                 texts: List[str] = None,
+                                 user_ids: List[str] = None,
+                                 tweet_ids: List[str] = None, 
+                                 reply_to_ids: List[str] = None) -> Dict[str, float]:
+        """Process structural features from the provided data.
         
         Args:
-            texts: List of tweet texts to process
-            timestamps: Optional list of tweet timestamps
-            tweet_ids: Optional list of tweet IDs
-            reply_to_ids: Optional list of IDs that each tweet is replying to
+            timestamps: List of tweet timestamps
+            texts: List of tweet texts
+            user_ids: List of user IDs
+            tweet_ids: List of tweet IDs
+            reply_to_ids: List of IDs that tweets are replying to
             
         Returns:
-            Dictionary containing exactly 14 structural features
-            
-        Raises:
-            ValueError: If any required features are missing
+            Dictionary containing structural features
         """
-        num_tweets = len(texts)
-        if num_tweets == 0:
-            return {}
+        # Initialize features dictionary with zeros
+        features = {feature: 0.0 for feature in self.STRUCTURAL_FEATURES}
         
-        try:
-            # Calculate basic metrics
-            tweets_with_hashtags = self._count_tweets_with_hashtags(texts)
-            tweets_with_media = self._count_tweets_with_media(texts)
-            tweets_with_mentions = self._count_tweets_with_mentions(texts)
-            retweets = self._count_retweets(texts)
-            tweets_with_urls = self._count_tweets_with_urls(texts)
+        # Ensure we have valid inputs
+        if not timestamps:
+            timestamps = []
+        if not texts:
+            texts = []
+        if not user_ids:
+            user_ids = []
+        if not tweet_ids:
+            tweet_ids = []
+        if not reply_to_ids:
+            reply_to_ids = []
             
-            # Calculate all 14 required structural features
-            features = {
-                'structural_num_tweets': num_tweets,
-                'structural_num_tweets_with_mentions': tweets_with_mentions,
-                'structural_ratio_tweets_with_mentions': tweets_with_mentions / num_tweets if num_tweets > 0 else 0,
-                'structural_num_tweets_with_hashtags': tweets_with_hashtags,
-                'structural_ratio_tweets_with_hashtags': tweets_with_hashtags / num_tweets if num_tweets > 0 else 0,
-                'structural_num_tweets_with_urls': tweets_with_urls,
-                'structural_ratio_tweets_with_urls': tweets_with_urls / num_tweets if num_tweets > 0 else 0,
-                'structural_num_tweets_with_media': tweets_with_media,
-                'structural_ratio_tweets_with_media': tweets_with_media / num_tweets if num_tweets > 0 else 0,
-                'structural_num_retweets': retweets,
-                'structural_ratio_retweets': retweets / num_tweets if num_tweets > 0 else 0,
-                'structural_avg_tweet_length': self._calculate_avg_tweet_length(texts),
-                'structural_thread_lifetime_minutes': self._calculate_thread_lifetime(timestamps) if timestamps else 0.0,
-                'structural_conversation_depth': self._calculate_conversation_depth(tweet_ids, reply_to_ids) if tweet_ids and reply_to_ids else 1
-            }
-            
-            # Validate that all required features are present
-            missing_features = self.STRUCTURAL_FEATURES - set(features.keys())
-            if missing_features:
-                raise ValueError(f"Missing required structural features: {missing_features}")
-                
+        # Ensure all inputs are lists
+        timestamps = list(timestamps)
+        texts = list(texts)
+        user_ids = list(user_ids)
+        tweet_ids = list(tweet_ids)
+        reply_to_ids = list(reply_to_ids)
+        
+        # Calculate total number of tweets
+        num_tweets = max(len(timestamps), len(texts), len(user_ids), len(tweet_ids))
+        if num_tweets == 0:
             return features
             
-        except Exception as e:
-            raise ValueError(f"Error processing structural features: {str(e)}")
+        features['structural_num_tweets'] = float(num_tweets)
+        
+        # Calculate tweet text-based features if texts are available
+        if texts:
+            # Average tweet length
+            features['structural_avg_tweet_length'] = self._calculate_avg_tweet_length(texts)
+            
+            # Hashtag features
+            num_with_hashtags = self._count_tweets_with_hashtags(texts)
+            features['structural_num_tweets_with_hashtags'] = float(num_with_hashtags)
+            features['structural_ratio_tweets_with_hashtags'] = num_with_hashtags / num_tweets if num_tweets > 0 else 0.0
+            
+            # Media features
+            num_with_media = self._count_tweets_with_media(texts)
+            features['structural_num_tweets_with_media'] = float(num_with_media)
+            features['structural_ratio_tweets_with_media'] = num_with_media / num_tweets if num_tweets > 0 else 0.0
+            
+            # Mention features
+            num_with_mentions = self._count_tweets_with_mentions(texts)
+            features['structural_num_tweets_with_mentions'] = float(num_with_mentions)
+            features['structural_ratio_tweets_with_mentions'] = num_with_mentions / num_tweets if num_tweets > 0 else 0.0
+            
+            # URL features
+            num_with_urls = self._count_tweets_with_urls(texts)
+            features['structural_num_tweets_with_urls'] = float(num_with_urls)
+            features['structural_ratio_tweets_with_urls'] = num_with_urls / num_tweets if num_tweets > 0 else 0.0
+            
+            # Retweet features
+            num_retweets = self._count_retweets(texts)
+            features['structural_num_retweets'] = float(num_retweets)
+            features['structural_ratio_retweets'] = num_retweets / num_tweets if num_tweets > 0 else 0.0
+        
+        # Calculate timestamp-based features if timestamps are available
+        if timestamps and len(timestamps) >= 2:
+            features['structural_thread_lifetime_minutes'] = self._calculate_thread_lifetime(timestamps)
+        
+        # Calculate conversation depth if tweet_ids and reply_to_ids are available
+        if tweet_ids and reply_to_ids and len(tweet_ids) > 0 and len(reply_to_ids) > 0:
+            features['structural_conversation_depth'] = float(self._calculate_conversation_depth(tweet_ids, reply_to_ids))
+        elif user_ids and len(user_ids) > 1:
+            # Estimate conversation depth based on unique users
+            unique_users = len(set(user_ids))
+            features['structural_conversation_depth'] = min(float(unique_users), 3.0)
+        
+        return features
     
     def extract_features(self) -> pd.DataFrame:
         """Extract structural features from the dataset.
@@ -343,3 +379,27 @@ class BaseStructuralFeatureExtractor(FeatureExtractor):
             ValueError: If feature validation fails
         """
         raise NotImplementedError("Subclasses must implement extract_features method")
+
+    def _handle_missing_values(self, df: pd.DataFrame, feature_columns: List[str]) -> pd.DataFrame:
+        """Handle missing values in feature columns.
+        
+        Args:
+            df: DataFrame to process
+            feature_columns: List of feature column names to handle
+            
+        Returns:
+            DataFrame with missing values handled
+        """
+        # For each feature column, fill missing values with the median
+        for col in feature_columns:
+            if col in df.columns:
+                # Calculate median value
+                median_value = df[col].median()
+                
+                # If median is NaN (all values are NaN), use 0.0
+                if pd.isna(median_value):
+                    df[col] = df[col].fillna(0.0)
+                else:
+                    df[col] = df[col].fillna(median_value)
+        
+        return df

@@ -1,7 +1,8 @@
 from .base_user import BaseUserFeatureExtractor
 import pandas as pd
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
+import logging
 
 class BuzzFeedUserFeatureExtractor(BaseUserFeatureExtractor):
     """Extract user-related features from BuzzFeed articles and tweets.
@@ -29,12 +30,35 @@ class BuzzFeedUserFeatureExtractor(BaseUserFeatureExtractor):
     - user_avg_interactions_per_author
     """
     
-    def _parse_buzzfeed_date(self, date_str: str) -> datetime:
-        """Parse BuzzFeed's date format to datetime object."""
-        try:
-            return datetime.strptime(str(date_str), '%Y-%m-%d %H:%M:%S')
-        except (ValueError, TypeError):
+    def _parse_buzzfeed_date(self, date_str: str) -> Optional[datetime]:
+        """Parse BuzzFeed's date format to datetime object.
+        
+        Handles multiple date formats and provides detailed error logging.
+        
+        Args:
+            date_str: Date string to parse
+            
+        Returns:
+            datetime object if successful, None otherwise
+        """
+        if not date_str:
             return None
+            
+        date_formats = [
+            '%Y-%m-%d %H:%M:%S',  # Standard format
+            '%Y-%m-%dT%H:%M:%S.%fZ',  # ISO format
+            '%Y-%m-%d',  # Date only
+            '%a %b %d %H:%M:%S +0000 %Y'  # Twitter format
+        ]
+        
+        for date_format in date_formats:
+            try:
+                return datetime.strptime(str(date_str).strip(), date_format)
+            except (ValueError, TypeError):
+                continue
+                
+        logging.warning(f"Failed to parse date: {date_str}")
+        return None
     
     def extract_features(self) -> pd.DataFrame:
         """Extract user-related features from the BuzzFeed dataset."""
