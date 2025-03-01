@@ -19,6 +19,7 @@ from utils.dataset_alignment import save_feature_sets
 from datetime import datetime
 import logging
 import re
+from utils.feature_consistency import ensure_feature_consistency
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -630,19 +631,19 @@ def load_credbank_features_dataset(extended_dataset: Union[pd.DataFrame, str, No
 
 # Applies all CREDBANK-specific feature extractors to generate the complete feature set
 def extract_all_features(df: pd.DataFrame, include_additional_features: bool = False) -> pd.DataFrame:
-    """Extract all CREDBANK-specific features from the dataset.
+    """Extract all features from the dataset.
     
     Args:
-        df: Input DataFrame
-        include_additional_features: Whether to include additional features not in the paper
+        df: DataFrame containing the dataset
+        include_additional_features: Whether to include additional features
         
     Returns:
-        DataFrame with all extracted features
+        DataFrame with extracted features
     """
-    # Make a copy of the input DataFrame to avoid modifying the original
+    # Create a copy of the DataFrame to avoid modifying the original
     result_df = df.copy()
     
-    # Initialize feature extractors
+    # Create feature extractors
     extractors = [
         CredbankStructuralFeatureExtractor(result_df),
         CredbankUserFeatureExtractor(result_df, include_additional_features),
@@ -651,35 +652,24 @@ def extract_all_features(df: pd.DataFrame, include_additional_features: bool = F
     ]
     
     # Apply each extractor and update the DataFrame
-    for i, extractor in enumerate(extractors):
-        logging.info(f"Applying extractor {i+1}/{len(extractors)}: {extractor.__class__.__name__}")
-        try:
-            # Get features from the current extractor
-            updated_df = extractor.extract_features()
-            
-            # Add any new columns from the updated DataFrame
-            new_columns = set(updated_df.columns) - set(result_df.columns)
-            for col in new_columns:
-                result_df[col] = updated_df[col]
-                
-            # Log the number of features extracted
-            feature_cols = [col for col in updated_df.columns if col not in df.columns]
-            logging.info(f"Extracted {len(feature_cols)} features from {extractor.__class__.__name__}")
-            
-        except Exception as e:
-            logging.error(f"Error in {extractor.__class__.__name__}: {str(e)}")
-            import traceback
-            logging.error(traceback.format_exc())
+    for extractor in extractors:
+        # Get features from the current extractor
+        updated_df = extractor.extract_features()
+        
+        # Add any new columns from the updated DataFrame
+        new_columns = set(updated_df.columns) - set(result_df.columns)
+        for col in new_columns:
+            result_df[col] = updated_df[col]
     
-    # Check if we have any temporal features
-    temporal_features = [col for col in result_df.columns if col.startswith('temporal_')]
-    if not temporal_features:
-        logging.warning("No temporal features were extracted. This may indicate an issue with the dataset.")
+    # Ensure feature consistency
+    result_df, issues = ensure_feature_consistency(result_df, fix_issues=True)
     
-    # Check if we have any structural features
-    structural_features = [col for col in result_df.columns if col.startswith('structural_')]
-    if not structural_features:
-        logging.warning("No structural features were extracted. This may indicate an issue with the dataset.")
+    if issues:
+        print(f"Fixed {len(issues)} feature issues in CREDBANK dataset")
+        for feature, feature_issues in list(issues.items())[:5]:  # Show first 5 issues
+            print(f"  {feature}: {', '.join(feature_issues)}")
+        if len(issues) > 5:
+            print(f"  ... and {len(issues) - 5} more issues")
     
     return result_df
 

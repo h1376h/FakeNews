@@ -12,6 +12,7 @@ from utils.features import (
     PhemeTemporalFeatureExtractor
 )
 from utils.dataset_alignment import save_feature_sets
+from utils.feature_consistency import ensure_feature_consistency
 
 # Loads a single tweet's data from its JSON file
 def load_tweet(file_path: str) -> Dict:
@@ -258,19 +259,19 @@ def load_pheme_features_dataset(extended_dataset: Union[pd.DataFrame, str, None]
 
 # Applies all PHEME-specific feature extractors to generate the complete feature set
 def extract_all_features(df: pd.DataFrame, include_additional_features: bool = False) -> pd.DataFrame:
-    """Extract all PHEME-specific features from the dataset.
+    """Extract all features from the dataset.
     
     Args:
-        df: Input DataFrame
-        include_additional_features: Whether to include additional features not in the paper
+        df: DataFrame containing the dataset
+        include_additional_features: Whether to include additional features
         
     Returns:
-        DataFrame with all extracted features
+        DataFrame with extracted features
     """
-    # Make a copy of the input DataFrame to avoid modifying the original
+    # Create a copy of the DataFrame to avoid modifying the original
     result_df = df.copy()
     
-    # Initialize feature extractors
+    # Create feature extractors
     extractors = [
         PhemeStructuralFeatureExtractor(result_df),
         PhemeUserFeatureExtractor(result_df, include_additional_features),
@@ -287,6 +288,16 @@ def extract_all_features(df: pd.DataFrame, include_additional_features: bool = F
         new_columns = set(updated_df.columns) - set(result_df.columns)
         for col in new_columns:
             result_df[col] = updated_df[col]
+    
+    # Ensure feature consistency
+    result_df, issues = ensure_feature_consistency(result_df, fix_issues=True)
+    
+    if issues:
+        print(f"Fixed {len(issues)} feature issues in PHEME dataset")
+        for feature, feature_issues in list(issues.items())[:5]:  # Show first 5 issues
+            print(f"  {feature}: {', '.join(feature_issues)}")
+        if len(issues) > 5:
+            print(f"  ... and {len(issues) - 5} more issues")
     
     return result_df
 

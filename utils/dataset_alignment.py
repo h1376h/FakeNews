@@ -4,6 +4,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Any, Union
 from textblob import TextBlob
 from collections import defaultdict
+from .feature_consistency import ensure_feature_consistency, validate_datasets_consistency
 
 def align_buzzfeed_threads(article_data: Dict) -> List[Dict]:
     """Extract and align Twitter threads from BuzzFeed articles.
@@ -164,6 +165,16 @@ def save_feature_sets(df: pd.DataFrame, output_dir: str, dataset_name: str) -> T
     paper_features_df = df[['source', 'label'] + paper_feature_columns].copy()
     all_features_df = df[['source', 'label'] + feature_columns].copy()
     
+    # Ensure feature consistency
+    paper_features_df, paper_issues = ensure_feature_consistency(paper_features_df, fix_issues=True)
+    all_features_df, all_issues = ensure_feature_consistency(all_features_df, fix_issues=True)
+    
+    if paper_issues:
+        print(f"Fixed {len(paper_issues)} feature issues in {dataset_name} paper features")
+    
+    if all_issues:
+        print(f"Fixed {len(all_issues)} feature issues in {dataset_name} all features")
+    
     # Save both feature sets
     paper_features_path = os.path.join(output_dir, f'{dataset_name}_paper_features.csv')
     all_features_path = os.path.join(output_dir, f'{dataset_name}_all_features.csv')
@@ -178,7 +189,8 @@ def save_feature_sets(df: pd.DataFrame, output_dir: str, dataset_name: str) -> T
 
 def align_datasets(pheme_df: pd.DataFrame = None, buzzfeed_df: pd.DataFrame = None, 
                   credbank_df: pd.DataFrame = None, output_dir: str = 'data/aligned',
-                  save_csv: bool = True) -> Dict[str, pd.DataFrame]:
+                  save_csv: bool = True, validate_features: bool = True,
+                  normalize: bool = True) -> Dict[str, pd.DataFrame]:
     """Align features across different datasets and save both paper and all feature sets.
     
     Args:
@@ -187,6 +199,8 @@ def align_datasets(pheme_df: pd.DataFrame = None, buzzfeed_df: pd.DataFrame = No
         credbank_df: CREDBANK dataset features
         output_dir: Directory to save aligned datasets
         save_csv: Whether to save CSV files
+        validate_features: Whether to validate feature consistency across datasets
+        normalize: Whether to normalize features across datasets
         
     Returns:
         Dictionary containing aligned DataFrames for paper and all features
@@ -209,11 +223,42 @@ def align_datasets(pheme_df: pd.DataFrame = None, buzzfeed_df: pd.DataFrame = No
         datasets['credbank_paper'] = credbank_paper
         datasets['credbank_all'] = credbank_all
     
+    # Validate feature consistency if requested
+    if validate_features and len(datasets) > 1:
+        print("\nValidating feature consistency across datasets...")
+        dataset_issues = validate_datasets_consistency(datasets)
+        
+        if dataset_issues:
+            print(f"Found consistency issues in {len(dataset_issues)} datasets")
+            for dataset_name, issues in dataset_issues.items():
+                print(f"  {dataset_name}: {len(issues)} feature issues")
+        else:
+            print("All datasets have consistent feature types and ranges!")
+    
+    # Normalize features if requested
+    if normalize and len(datasets) > 1:
+        print("\nNormalizing features across datasets...")
+        normalized_paper = normalize_features(datasets, 'paper')
+        normalized_all = normalize_features(datasets, 'all')
+        
+        # Replace original datasets with normalized versions
+        for key, df in normalized_paper.items():
+            datasets[key] = df
+        
+        for key, df in normalized_all.items():
+            datasets[key] = df
+    
     if save_csv and len(datasets) > 0:
         # Create combined datasets for paper features
         paper_dfs = [df for name, df in datasets.items() if name.endswith('_paper')]
         if paper_dfs:
             combined_paper = pd.concat(paper_dfs, axis=0, ignore_index=True)
+            
+            # Ensure consistency in combined dataset
+            combined_paper, combined_paper_issues = ensure_feature_consistency(combined_paper, fix_issues=True)
+            if combined_paper_issues:
+                print(f"Fixed {len(combined_paper_issues)} feature issues in combined paper features")
+            
             combined_paper_path = os.path.join(output_dir, 'combined_paper_features.csv')
             combined_paper.to_csv(combined_paper_path, index=False)
             print(f"Saved combined paper features to: {combined_paper_path}")
@@ -223,6 +268,12 @@ def align_datasets(pheme_df: pd.DataFrame = None, buzzfeed_df: pd.DataFrame = No
         all_dfs = [df for name, df in datasets.items() if name.endswith('_all')]
         if all_dfs:
             combined_all = pd.concat(all_dfs, axis=0, ignore_index=True)
+            
+            # Ensure consistency in combined dataset
+            combined_all, combined_all_issues = ensure_feature_consistency(combined_all, fix_issues=True)
+            if combined_all_issues:
+                print(f"Fixed {len(combined_all_issues)} feature issues in combined all features")
+            
             combined_all_path = os.path.join(output_dir, 'combined_all_features.csv')
             combined_all.to_csv(combined_all_path, index=False)
             print(f"Saved combined all features to: {combined_all_path}")
