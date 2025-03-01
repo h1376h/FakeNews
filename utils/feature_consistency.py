@@ -68,6 +68,7 @@ FEATURE_METADATA = {
     'user_interaction_count': {'type': 'int', 'range': [0, float('inf')], 'description': 'Number of user interactions (mentions/retweets)'},
     'user_unique_authors': {'type': 'int', 'range': [0, float('inf')], 'description': 'Number of unique authors in thread'},
     'user_avg_interactions_per_author': {'type': 'float', 'range': [0.0, float('inf')], 'description': 'Average interactions per author'},
+    'user_ids': {'type': 'str', 'range': [-float('inf'), float('inf')], 'description': 'List of user IDs involved in the thread'},
     
     # Temporal features
     'temporal_account_age_slope': {'type': 'float', 'range': [-float('inf'), float('inf')], 'description': 'Trend in user account ages over time'},
