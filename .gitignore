@@ -39,6 +39,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Other python files
+ml*.py
+
 # Manim cache
 *.manimcache
 .DS_Store
